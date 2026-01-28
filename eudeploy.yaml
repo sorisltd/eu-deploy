@@ -1,0 +1,23 @@
+version: 1
+project:
+    name: eu-deploy
+    framework: auto
+build:
+    command: npm run build
+    output: dist
+runtime:
+    type: web
+    start: npm run start
+    port: 3000
+    healthcheck:
+        path: /health
+        interval: 10s
+        timeout: 2s
+routes:
+    - hostname: my-app.eu-deploy.dev
+      path: /
+      target: web
+previews:
+    enabled: false
+    hostname_template: pr-{{pr}}.my-app.eu-deploy.dev
+    ttl_hours: 72
