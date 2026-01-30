@@ -106,3 +106,15 @@ func WriteYAML(path string, cfg Config) error {
 	// Write with safe permissions
 	return os.WriteFile(path, b, 0o644)
 }
+
+func ReadYAML(path string) (Config, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return Config{}, err
+	}
+	var cfg Config
+	if err := yaml.Unmarshal(b, &cfg); err != nil {
+		return Config{}, err
+	}
+	return cfg, nil
+}
