@@ -8,10 +8,70 @@ Licensed under Apache-2.0. See LICENSE and NOTICE.
 
 - `eu init` generates an `eudeploy.yaml` file with Node-oriented defaults.
 - `eu deploy --target hetzner` prompts for missing server details, can seed env keys from `.env.example`, and saves the non-secret answers back to `eudeploy.yaml`.
+- `eu preflight` checks SSH, Docker, DNS, remote paths, ports, and TLS prerequisites before you deploy.
+- `eu bootstrap` prepares a fresh Hetzner VM with Docker and the directory layout that `eu-deploy` expects.
 - `eu build` runs the configured build command and packages the configured output folder.
 - `eu deploy` supports local Docker and a single-VM Hetzner SSH deploy for `runtime.type: web`.
 
 The checked-in sample config lives at `templates/node-web.yaml`. This repository itself is the CLI, not a deployable Node app.
+
+## Commands
+
+`eu init`
+- Detects the current app and writes `eudeploy.yaml`.
+- Run this once at the start of a project, then review the generated config.
+
+`eu build`
+- Runs the configured build command and packages the output into `.eudeploy/`.
+- Run this when you want to verify the artifact locally before deployment.
+
+`eu bootstrap`
+- Connects to a Hetzner VM over SSH and prepares it for `eu-deploy`.
+- Use this first on a fresh server. It can install Docker, create the expected directories, and optionally configure UFW and fail2ban.
+
+`eu preflight`
+- Checks whether the configured Hetzner VM looks ready for deployment.
+- Use this before the first deploy and whenever DNS, SSH, ports, or Docker may have changed.
+
+`eu deploy`
+- `eu deploy` uses local Docker by default.
+- `eu deploy --target hetzner` builds the app if needed, uploads the artifact, starts or updates the app container, and refreshes the shared Caddy proxy config on the server.
+
+## Typical usage
+
+Local Docker:
+
+```bash
+./eu init
+./eu build
+./eu deploy
+```
+
+First deploy to a new Hetzner VM:
+
+```bash
+./eu init
+# review eudeploy.yaml and set the real hostname
+./eu bootstrap
+./eu preflight
+./eu deploy --target hetzner
+```
+
+Repeat deploy to an existing Hetzner VM:
+
+```bash
+./eu preflight
+./eu deploy --target hetzner
+```
+
+Adding another website to the same Hetzner server:
+
+```bash
+./eu init
+# set a different hostname, app_path, and service_port
+./eu preflight
+./eu deploy --target hetzner
+```
 
 Framework notes:
 - Nuxt and SolidStart currently map to `.output` with a direct Node start command.
@@ -47,24 +107,49 @@ EUDEPLOY_DOCKER_E2E=1 go test ./internal/deploy -run TestNextStandaloneDockerE2E
 
 Prerequisites:
 - A Linux VM reachable over SSH
-- Docker installed on the VM
 - DNS for your hostname pointed at the VM before you expect TLS to succeed
 
 Run:
 
 ```bash
 ./eu init
+./eu bootstrap
+./eu preflight
 ./eu deploy --target hetzner
 ```
 
-On the first deploy, the CLI will prompt for:
+On the first Hetzner workflow, the CLI will prompt for:
 - public hostname
 - Hetzner server host/IP
 - SSH user, port, and optional key path
-- remote app path and loopback service port
+- remote server root, app path, and loopback service port
 - deploy env values for keys found in `env.*` or seeded from `.env.example`
 
-The Hetzner target uploads the build artifact, generates a remote Docker image, runs the app on `127.0.0.1:<service_port>`, and starts Caddy in Docker to terminate TLS and reverse proxy the hostname.
+`eu bootstrap` installs Docker on Debian/Ubuntu-style hosts, enables the Docker daemon, optionally configures UFW and fail2ban, and creates the expected `server_path`, app, and shared proxy directories.
+
+`eu preflight` verifies:
+- local `ssh` and `scp`
+- the Hetzner server address resolves
+- your hostname resolves and whether it matches the server IP
+- SSH connectivity
+- remote Docker CLI and daemon access
+- write access to the configured server and app paths
+- whether ports `80/443` are free or already owned by the shared proxy
+- whether the app's loopback `service_port` is free
+
+The Hetzner target uploads the build artifact, generates a remote Docker image, runs the app on `127.0.0.1:<service_port>`, and updates a shared Caddy container on the server. That shared proxy model is what allows multiple small websites to coexist on one VM:
+
+- one Caddy container owns ports `80/443`
+- each app runs in its own Docker container on a different loopback port
+- each deploy writes one per-site Caddy snippet keyed by hostname
+
+Example multi-site layout:
+
+```text
+massage.example.com -> 127.0.0.1:3001
+yoga.example.com    -> 127.0.0.1:3002
+pilates.example.com -> 127.0.0.1:3003
+```
 
 ## Local deploy (Docker)
 

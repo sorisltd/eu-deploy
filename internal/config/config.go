@@ -72,6 +72,7 @@ type HetznerSpec struct {
 	User        string `yaml:"user"`
 	Port        int    `yaml:"port,omitempty"`
 	SSHKeyPath  string `yaml:"ssh_key_path,omitempty"`
+	ServerPath  string `yaml:"server_path,omitempty"`
 	AppPath     string `yaml:"app_path,omitempty"`
 	ServicePort int    `yaml:"service_port,omitempty"`
 }

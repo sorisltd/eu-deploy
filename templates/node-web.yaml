@@ -27,5 +27,6 @@ hetzner:
   user: root
   port: 22
   ssh_key_path: ""
-  app_path: /opt/eu-deploy/my-app
+  server_path: /opt/eu-deploy
+  app_path: /opt/eu-deploy/apps/my-app
   service_port: 3000

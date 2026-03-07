@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -142,7 +143,9 @@ func main() {
 			case "docker":
 				return runDockerDeploy(cmd, cfg, wd)
 			case "hetzner":
-				changed, envValues, err := deploy.PrepareHetznerConfig(&cfg, wd)
+				changed, envValues, err := deploy.PrepareHetznerConfig(&cfg, wd, deploy.PrepareHetznerConfigOptions{
+					PromptEnv: true,
+				})
 				if err != nil {
 					return err
 				}
@@ -163,7 +166,103 @@ func main() {
 	deployCmd.Flags().Bool("detach", false, "Run container in background")
 	deployCmd.Flags().String("name", "", "Container name (default: eu-<project>)")
 
-	rootCmd.AddCommand(initCmd, buildCmd, deployCmd)
+	preflightCmd := &cobra.Command{
+		Use:   "preflight",
+		Short: "Check whether a Hetzner VM is ready for deployment",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			target, err := cmd.Flags().GetString("target")
+			if err != nil {
+				return err
+			}
+			if strings.TrimSpace(target) == "" {
+				target = "hetzner"
+			}
+			if target != "hetzner" {
+				return fmt.Errorf("unsupported target: %s", target)
+			}
+
+			cfg, cfgPath, wd, err := loadConfigFromWorkingDir()
+			if err != nil {
+				return err
+			}
+			if runtimeType := strings.TrimSpace(cfg.Runtime.Type); runtimeType != "" && runtimeType != "web" {
+				return fmt.Errorf("unsupported runtime.type: %s", runtimeType)
+			}
+
+			changed, _, err := deploy.PrepareHetznerConfig(&cfg, wd, deploy.PrepareHetznerConfigOptions{})
+			if err != nil {
+				return err
+			}
+			if changed {
+				if err := config.WriteYAML(cfgPath, cfg); err != nil {
+					return err
+				}
+				fmt.Printf("OK Updated %s\n", filepath.Base(cfgPath))
+			}
+
+			return runHetznerPreflight(cfg, wd)
+		},
+	}
+	preflightCmd.Flags().String("target", "hetzner", "Preflight target (hetzner)")
+
+	bootstrapCmd := &cobra.Command{
+		Use:   "bootstrap",
+		Short: "Prepare a Hetzner VM for eu-deploy",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			target, err := cmd.Flags().GetString("target")
+			if err != nil {
+				return err
+			}
+			if strings.TrimSpace(target) == "" {
+				target = "hetzner"
+			}
+			if target != "hetzner" {
+				return fmt.Errorf("unsupported target: %s", target)
+			}
+
+			cfg, cfgPath, wd, err := loadConfigFromWorkingDir()
+			if err != nil {
+				return err
+			}
+			if runtimeType := strings.TrimSpace(cfg.Runtime.Type); runtimeType != "" && runtimeType != "web" {
+				return fmt.Errorf("unsupported runtime.type: %s", runtimeType)
+			}
+
+			changed, _, err := deploy.PrepareHetznerConfig(&cfg, wd, deploy.PrepareHetznerConfigOptions{})
+			if err != nil {
+				return err
+			}
+			if changed {
+				if err := config.WriteYAML(cfgPath, cfg); err != nil {
+					return err
+				}
+				fmt.Printf("OK Updated %s\n", filepath.Base(cfgPath))
+			}
+			if cfg.Hetzner == nil {
+				return fmt.Errorf("hetzner config is missing")
+			}
+
+			opts, err := deploy.PromptHetznerBootstrapOptions(*cfg.Hetzner)
+			if err != nil {
+				return err
+			}
+
+			fmt.Printf("Bootstrapping %s@%s...\n", cfg.Hetzner.User, cfg.Hetzner.Host)
+			if err := deploy.BootstrapHetzner(opts); err != nil {
+				return err
+			}
+
+			fmt.Printf("OK Server root: %s\n", opts.RemoteServerPath)
+			fmt.Printf("OK App path: %s\n", opts.RemoteAppPath)
+			if cfg.Hetzner.User != "root" {
+				fmt.Printf("NOTE Reconnect your SSH session before deploy so docker group membership takes effect for %s.\n", cfg.Hetzner.User)
+			}
+			return nil
+		},
+	}
+	bootstrapCmd.Flags().String("target", "hetzner", "Bootstrap target (hetzner)")
+
+	rootCmd.AddCommand(initCmd, buildCmd, deployCmd, preflightCmd, bootstrapCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -281,33 +380,95 @@ func runHetznerDeploy(cfg config.Config, wd string, envValues map[string]string)
 		return err
 	}
 
-	opts := deploy.HetznerOptions{
-		WorkDir:             wd,
-		ArtifactPath:        res.ArtifactPath,
-		RuntimeStart:        cfg.Runtime.Start,
-		ContainerPort:       cfg.Runtime.Port,
-		ServicePort:         cfg.Hetzner.ServicePort,
-		ImageTag:            fmt.Sprintf("eu-deploy-%s:remote", safeProject),
-		AppContainerName:    fmt.Sprintf("eu-%s-app", safeProject),
-		ProxyContainerName:  fmt.Sprintf("eu-%s-caddy", safeProject),
-		InstallDependencies: installDependencies,
-		RemoteHost:          cfg.Hetzner.Host,
-		RemoteUser:          cfg.Hetzner.User,
-		RemotePort:          cfg.Hetzner.Port,
-		SSHKeyPath:          cfg.Hetzner.SSHKeyPath,
-		RemoteAppPath:       cfg.Hetzner.AppPath,
-		Hostname:            cfg.Routes[0].Hostname,
-		RoutePath:           cfg.Routes[0].Path,
-		HealthcheckPath:     cfg.Runtime.Healthcheck.Path,
-		Env:                 envValues,
-	}
+	opts := buildHetznerOptions(cfg, wd, safeProject)
+	opts.ArtifactPath = res.ArtifactPath
+	opts.InstallDependencies = installDependencies
+	opts.Env = envValues
 
 	fmt.Printf("Uploading release to %s@%s...\n", cfg.Hetzner.User, cfg.Hetzner.Host)
 	if err := deploy.DeployToHetzner(opts); err != nil {
 		return err
 	}
 
+	fmt.Printf("OK Server root: %s\n", cfg.Hetzner.ServerPath)
 	fmt.Printf("OK Remote app path: %s\n", cfg.Hetzner.AppPath)
 	fmt.Printf("✓ Running at https://%s\n", cfg.Routes[0].Hostname)
 	return nil
+}
+
+func runHetznerPreflight(cfg config.Config, wd string) error {
+	projectName := build.ArtifactName(cfg, wd)
+	opts := buildHetznerOptions(cfg, wd, deploy.SanitizeDockerName(projectName))
+
+	results, err := deploy.PreflightHetzner(opts)
+	if err != nil {
+		return err
+	}
+
+	var failed bool
+	for _, result := range results {
+		label := "OK"
+		switch result.Status {
+		case deploy.PreflightWarning:
+			label = "WARN"
+		case deploy.PreflightFailure:
+			label = "FAIL"
+			failed = true
+		}
+		fmt.Printf("%-5s %s: %s\n", label, result.Name, result.Detail)
+	}
+
+	if failed {
+		return fmt.Errorf("preflight failed")
+	}
+
+	if slices.ContainsFunc(results, func(result deploy.PreflightResult) bool {
+		return result.Status == deploy.PreflightWarning
+	}) {
+		fmt.Println("NOTE Preflight passed with warnings.")
+		return nil
+	}
+
+	fmt.Println("OK Preflight passed.")
+	return nil
+}
+
+func buildHetznerOptions(cfg config.Config, wd, safeProject string) deploy.HetznerOptions {
+	return deploy.HetznerOptions{
+		WorkDir:            wd,
+		RuntimeStart:       cfg.Runtime.Start,
+		ContainerPort:      cfg.Runtime.Port,
+		ServicePort:        cfg.Hetzner.ServicePort,
+		ImageTag:           fmt.Sprintf("eu-deploy-%s:remote", safeProject),
+		AppContainerName:   fmt.Sprintf("eu-%s-app", safeProject),
+		ProxyContainerName: deploy.SharedProxyContainerName(),
+		RemoteHost:         cfg.Hetzner.Host,
+		RemoteUser:         cfg.Hetzner.User,
+		RemotePort:         cfg.Hetzner.Port,
+		SSHKeyPath:         cfg.Hetzner.SSHKeyPath,
+		RemoteServerPath:   cfg.Hetzner.ServerPath,
+		RemoteAppPath:      cfg.Hetzner.AppPath,
+		Hostname:           cfg.Routes[0].Hostname,
+		RoutePath:          cfg.Routes[0].Path,
+		HealthcheckPath:    cfg.Runtime.Healthcheck.Path,
+		SiteConfigName:     deploy.BuildHetznerSiteConfigName(cfg.Routes[0].Hostname),
+	}
+}
+
+func loadConfigFromWorkingDir() (config.Config, string, string, error) {
+	wd, err := os.Getwd()
+	if err != nil {
+		return config.Config{}, "", "", err
+	}
+
+	cfgPath := filepath.Join(wd, "eudeploy.yaml")
+	cfg, err := config.ReadYAML(cfgPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return config.Config{}, "", "", fmt.Errorf("eudeploy.yaml not found: run `eu init` first")
+		}
+		return config.Config{}, "", "", err
+	}
+
+	return cfg, cfgPath, wd, nil
 }

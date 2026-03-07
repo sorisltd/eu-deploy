@@ -14,6 +14,11 @@ import (
 	"github.com/sorisltd/eu-deploy/internal/config"
 )
 
+const (
+	sharedProxyContainer = "eu-shared-caddy"
+	sharedProxyDirName   = "_proxy"
+)
+
 type HetznerOptions struct {
 	WorkDir             string
 	ArtifactPath        string
@@ -28,14 +33,20 @@ type HetznerOptions struct {
 	RemoteUser          string
 	RemotePort          int
 	SSHKeyPath          string
+	RemoteServerPath    string
 	RemoteAppPath       string
 	Hostname            string
 	RoutePath           string
 	HealthcheckPath     string
+	SiteConfigName      string
 	Env                 map[string]string
 }
 
-func PrepareHetznerConfig(cfg *config.Config, workDir string) (bool, map[string]string, error) {
+type PrepareHetznerConfigOptions struct {
+	PromptEnv bool
+}
+
+func PrepareHetznerConfig(cfg *config.Config, workDir string, options PrepareHetznerConfigOptions) (bool, map[string]string, error) {
 	p := &linePrompter{
 		in:  bufio.NewReader(os.Stdin),
 		out: os.Stdout,
@@ -139,12 +150,24 @@ func PrepareHetznerConfig(cfg *config.Config, workDir string) (bool, map[string]
 		cfg.Hetzner.SSHKeyPath = value
 		changed = true
 	}
-	if strings.TrimSpace(cfg.Hetzner.AppPath) == "" {
-		value, err := p.String("Remote app path", defaultHetznerAppPath(cfg.Hetzner.User, cfg.Project.Name), true)
+
+	serverPath := strings.TrimSpace(cfg.Hetzner.ServerPath)
+	if serverPath == "" {
+		serverPath = effectiveHetznerServerPath(*cfg.Hetzner, cfg.Project.Name)
+		value, err := p.String("Remote server root", serverPath, true)
 		if err != nil {
 			return false, nil, err
 		}
-		cfg.Hetzner.AppPath = value
+		cfg.Hetzner.ServerPath = filepath.ToSlash(filepath.Clean(value))
+		changed = true
+	}
+
+	if strings.TrimSpace(cfg.Hetzner.AppPath) == "" {
+		value, err := p.String("Remote app path", defaultHetznerAppPath(cfg.Hetzner.ServerPath, cfg.Project.Name), true)
+		if err != nil {
+			return false, nil, err
+		}
+		cfg.Hetzner.AppPath = filepath.ToSlash(filepath.Clean(value))
 		changed = true
 	}
 	if cfg.Hetzner.ServicePort == 0 {
@@ -156,12 +179,17 @@ func PrepareHetznerConfig(cfg *config.Config, workDir string) (bool, map[string]
 		changed = true
 	}
 
-	envValues, envChanged, err := collectDeployEnvValues(cfg, workDir, p)
-	if err != nil {
-		return false, nil, err
-	}
-	if envChanged {
-		changed = true
+	var envValues map[string]string
+	if options.PromptEnv {
+		var envChanged bool
+		var err error
+		envValues, envChanged, err = collectDeployEnvValues(cfg, workDir, p)
+		if err != nil {
+			return false, nil, err
+		}
+		if envChanged {
+			changed = true
+		}
 	}
 
 	return changed, envValues, nil
@@ -178,7 +206,7 @@ func DeployToHetzner(opts HetznerOptions) error {
 	}
 	defer os.RemoveAll(bundleDir)
 
-	if err := ensureRemoteDirectory(opts); err != nil {
+	if err := ensureRemoteDirectories(opts); err != nil {
 		return err
 	}
 	if err := uploadHetznerBundle(opts, bundleDir); err != nil {
@@ -209,6 +237,8 @@ func validateHetznerOptions(opts HetznerOptions) error {
 		return fmt.Errorf("hetzner.user is required")
 	case opts.RemotePort <= 0:
 		return fmt.Errorf("hetzner.port is required")
+	case strings.TrimSpace(opts.RemoteServerPath) == "":
+		return fmt.Errorf("hetzner.server_path is required")
 	case strings.TrimSpace(opts.RemoteAppPath) == "":
 		return fmt.Errorf("hetzner.app_path is required")
 	case strings.TrimSpace(opts.Hostname) == "":
@@ -219,6 +249,8 @@ func validateHetznerOptions(opts HetznerOptions) error {
 		return fmt.Errorf("app container name is required")
 	case strings.TrimSpace(opts.ProxyContainerName) == "":
 		return fmt.Errorf("proxy container name is required")
+	case strings.TrimSpace(opts.SiteConfigName) == "":
+		return fmt.Errorf("site config name is required")
 	default:
 		return nil
 	}
@@ -232,7 +264,7 @@ func prepareHetznerBundle(opts HetznerOptions) (string, error) {
 
 	artifactSource := opts.ArtifactPath
 	if !filepath.IsAbs(artifactSource) {
-		artifactSource = filepath.Join(opts.WorkDir, artifactSource)
+		artifactSource = filepath.Join(opts.WorkDir, opts.ArtifactPath)
 	}
 	if info, err := os.Stat(artifactSource); err != nil || info.IsDir() {
 		os.RemoveAll(bundleDir)
@@ -256,8 +288,8 @@ func prepareHetznerBundle(opts HetznerOptions) (string, error) {
 		return "", err
 	}
 
-	caddyfile := renderCaddyfile(opts.Hostname, opts.RoutePath, opts.ServicePort)
-	if err := os.WriteFile(filepath.Join(bundleDir, "Caddyfile"), []byte(caddyfile), 0o644); err != nil {
+	siteCaddy := renderSiteCaddyfile(opts.Hostname, opts.RoutePath, opts.ServicePort)
+	if err := os.WriteFile(filepath.Join(bundleDir, "site.caddy"), []byte(siteCaddy), 0o644); err != nil {
 		os.RemoveAll(bundleDir)
 		return "", err
 	}
@@ -286,8 +318,16 @@ func prepareHetznerBundle(opts HetznerOptions) (string, error) {
 	return bundleDir, nil
 }
 
-func ensureRemoteDirectory(opts HetznerOptions) error {
-	script := fmt.Sprintf("mkdir -p %s\n", shellQuote(opts.RemoteAppPath))
+func ensureRemoteDirectories(opts HetznerOptions) error {
+	proxyRoot := sharedProxyRoot(opts.RemoteServerPath)
+	script := strings.Join([]string{
+		"set -euo pipefail",
+		fmt.Sprintf("mkdir -p %s", shellQuote(opts.RemoteServerPath)),
+		fmt.Sprintf("mkdir -p %s", shellQuote(opts.RemoteAppPath)),
+		fmt.Sprintf("mkdir -p %s", shellQuote(filepath.ToSlash(filepath.Join(proxyRoot, "sites")))),
+		fmt.Sprintf("mkdir -p %s", shellQuote(filepath.ToSlash(filepath.Join(proxyRoot, "data")))),
+		fmt.Sprintf("mkdir -p %s", shellQuote(filepath.ToSlash(filepath.Join(proxyRoot, "config")))),
+	}, "\n")
 	return runRemoteScript(opts, script)
 }
 
@@ -297,13 +337,7 @@ func uploadHetznerBundle(opts HetznerOptions, bundleDir string) error {
 		return err
 	}
 
-	args := []string{}
-	if opts.RemotePort > 0 {
-		args = append(args, "-P", strconv.Itoa(opts.RemotePort))
-	}
-	if strings.TrimSpace(opts.SSHKeyPath) != "" {
-		args = append(args, "-i", opts.SSHKeyPath)
-	}
+	args := buildSCPArgs(opts)
 	for _, entry := range entries {
 		if entry.IsDir() {
 			continue
@@ -319,13 +353,13 @@ func uploadHetznerBundle(opts HetznerOptions, bundleDir string) error {
 }
 
 func runHetznerDeployScript(opts HetznerOptions) error {
-	healthPath := strings.TrimSpace(opts.HealthcheckPath)
-	if healthPath == "" {
-		healthPath = "/"
-	}
-	if !strings.HasPrefix(healthPath, "/") {
-		healthPath = "/" + healthPath
-	}
+	healthPath := normalizedHealthcheckPath(opts.HealthcheckPath)
+	proxyRoot := sharedProxyRoot(opts.RemoteServerPath)
+	proxySitesDir := filepath.ToSlash(filepath.Join(proxyRoot, "sites"))
+	rootCaddyPath := filepath.ToSlash(filepath.Join(proxyRoot, "Caddyfile"))
+	proxyDataPath := filepath.ToSlash(filepath.Join(proxyRoot, "data"))
+	proxyConfigPath := filepath.ToSlash(filepath.Join(proxyRoot, "config"))
+	siteConfigPath := filepath.ToSlash(filepath.Join(proxySitesDir, opts.SiteConfigName))
 
 	script := strings.Join([]string{
 		"set -euo pipefail",
@@ -334,6 +368,8 @@ func runHetznerDeployScript(opts HetznerOptions) error {
 		"  echo 'docker is required on the remote host' >&2",
 		"  exit 1",
 		"fi",
+		fmt.Sprintf("cat > %s <<'EOF'\n%sEOF", shellQuote(rootCaddyPath), renderRootCaddyfile()),
+		fmt.Sprintf("install -m 0644 site.caddy %s", shellQuote(siteConfigPath)),
 		fmt.Sprintf("docker build -t %s -f Dockerfile .", shellQuote(opts.ImageTag)),
 		fmt.Sprintf("docker rm -f %s >/dev/null 2>&1 || true", shellQuote(opts.AppContainerName)),
 		fmt.Sprintf("docker run -d --restart unless-stopped --env-file app.env --name %s -p 127.0.0.1:%d:%d %s >/dev/null",
@@ -350,24 +386,19 @@ func runHetznerDeployScript(opts HetznerOptions) error {
 		"done",
 		"docker pull caddy:2 >/dev/null",
 		fmt.Sprintf("docker rm -f %s >/dev/null 2>&1 || true", shellQuote(opts.ProxyContainerName)),
-		fmt.Sprintf("docker run -d --restart unless-stopped --network host --name %s -v %s:/etc/caddy/Caddyfile:ro -v %s:/data -v %s:/config caddy:2 >/dev/null",
+		fmt.Sprintf("docker run -d --restart unless-stopped --network host --name %s -v %s:/etc/caddy/Caddyfile:ro -v %s:/etc/caddy/sites:ro -v %s:/data -v %s:/config caddy:2 >/dev/null",
 			shellQuote(opts.ProxyContainerName),
-			shellQuote(filepath.ToSlash(filepath.Join(opts.RemoteAppPath, "Caddyfile"))),
-			shellQuote(filepath.ToSlash(filepath.Join(opts.RemoteAppPath, "caddy-data"))),
-			shellQuote(filepath.ToSlash(filepath.Join(opts.RemoteAppPath, "caddy-config")))),
+			shellQuote(rootCaddyPath),
+			shellQuote(proxySitesDir),
+			shellQuote(proxyDataPath),
+			shellQuote(proxyConfigPath)),
 	}, "\n")
 
 	return runRemoteScript(opts, script)
 }
 
 func runRemoteScript(opts HetznerOptions, script string) error {
-	args := []string{}
-	if opts.RemotePort > 0 {
-		args = append(args, "-p", strconv.Itoa(opts.RemotePort))
-	}
-	if strings.TrimSpace(opts.SSHKeyPath) != "" {
-		args = append(args, "-i", opts.SSHKeyPath)
-	}
+	args := buildSSHArgs(opts, false)
 	args = append(args, fmt.Sprintf("%s@%s", opts.RemoteUser, opts.RemoteHost), "bash -se")
 
 	cmd := exec.Command("ssh", args...)
@@ -377,7 +408,7 @@ func runRemoteScript(opts HetznerOptions, script string) error {
 	return cmd.Run()
 }
 
-func renderCaddyfile(hostname, routePath string, servicePort int) string {
+func renderSiteCaddyfile(hostname, routePath string, servicePort int) string {
 	hostname = strings.TrimSpace(hostname)
 	routePath = normalizeRoutePath(routePath)
 
@@ -399,6 +430,10 @@ func renderCaddyfile(hostname, routePath string, servicePort int) string {
 	lines = append(lines, "}")
 
 	return strings.Join(lines, "\n") + "\n"
+}
+
+func renderRootCaddyfile() string {
+	return "import /etc/caddy/sites/*.caddy\n"
 }
 
 func renderEnvFile(values map[string]string) (string, error) {
@@ -527,15 +562,23 @@ func normalizeRoutePath(path string) string {
 	return path
 }
 
+func normalizedHealthcheckPath(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "/"
+	}
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	return path
+}
+
 func isPlaceholderHostname(host string) bool {
 	host = strings.TrimSpace(host)
 	return host == "" || strings.HasSuffix(host, ".eu-deploy.dev")
 }
 
 func defaultBuildCommand(framework string) string {
-	if strings.TrimSpace(framework) == "" {
-		return "npm run build"
-	}
 	return "npm run build"
 }
 
@@ -580,15 +623,55 @@ func defaultSSHKeyPath() string {
 	return ""
 }
 
-func defaultHetznerAppPath(user, projectName string) string {
+func defaultHetznerServerPath(user string) string {
+	if strings.TrimSpace(user) == "" || strings.TrimSpace(user) == "root" {
+		return filepath.ToSlash(filepath.Join("/opt", "eu-deploy"))
+	}
+	return filepath.ToSlash(filepath.Join("/home", user, "eu-deploy"))
+}
+
+func defaultHetznerAppPath(serverPath, projectName string) string {
 	safeProject := SanitizeDockerName(projectName)
 	if safeProject == "" {
 		safeProject = "app"
 	}
-	if strings.TrimSpace(user) == "" || strings.TrimSpace(user) == "root" {
-		return filepath.ToSlash(filepath.Join("/opt", "eu-deploy", safeProject))
+	root := strings.TrimSpace(serverPath)
+	if root == "" {
+		root = defaultHetznerServerPath("root")
 	}
-	return filepath.ToSlash(filepath.Join("/home", user, "eu-deploy", safeProject))
+	return filepath.ToSlash(filepath.Join(root, "apps", safeProject))
+}
+
+func effectiveHetznerServerPath(spec config.HetznerSpec, projectName string) string {
+	if strings.TrimSpace(spec.ServerPath) != "" {
+		return filepath.ToSlash(filepath.Clean(spec.ServerPath))
+	}
+	if strings.TrimSpace(spec.AppPath) != "" {
+		return filepath.ToSlash(filepath.Clean(filepath.Dir(spec.AppPath)))
+	}
+	return defaultHetznerServerPath(spec.User)
+}
+
+func SharedProxyContainerName() string {
+	return sharedProxyContainer
+}
+
+func BuildHetznerSiteConfigName(hostname string) string {
+	name := strings.TrimSpace(hostname)
+	if name == "" {
+		return "site.caddy"
+	}
+	replacer := strings.NewReplacer("/", "-", "\\", "-", ":", "-", "*", "-", "?", "-", " ", "-")
+	name = replacer.Replace(name)
+	name = strings.Trim(name, "-.")
+	if name == "" {
+		name = "site"
+	}
+	return name + ".caddy"
+}
+
+func sharedProxyRoot(serverPath string) string {
+	return filepath.ToSlash(filepath.Join(serverPath, sharedProxyDirName))
 }
 
 func sortedKeys(m map[string]string) []string {
@@ -639,6 +722,37 @@ func copyHetznerFile(srcPath, destPath string) error {
 		return err
 	}
 	return dest.Close()
+}
+
+func buildSSHArgs(opts HetznerOptions, batchMode bool) []string {
+	args := []string{
+		"-o", "StrictHostKeyChecking=accept-new",
+		"-o", "UserKnownHostsFile=" + filepath.ToSlash(filepath.Join(os.TempDir(), "eudeploy-known-hosts")),
+	}
+	if batchMode {
+		args = append(args, "-o", "BatchMode=yes")
+	}
+	if opts.RemotePort > 0 {
+		args = append(args, "-p", strconv.Itoa(opts.RemotePort))
+	}
+	if strings.TrimSpace(opts.SSHKeyPath) != "" {
+		args = append(args, "-i", opts.SSHKeyPath)
+	}
+	return args
+}
+
+func buildSCPArgs(opts HetznerOptions) []string {
+	args := []string{
+		"-o", "StrictHostKeyChecking=accept-new",
+		"-o", "UserKnownHostsFile=" + filepath.ToSlash(filepath.Join(os.TempDir(), "eudeploy-known-hosts")),
+	}
+	if opts.RemotePort > 0 {
+		args = append(args, "-P", strconv.Itoa(opts.RemotePort))
+	}
+	if strings.TrimSpace(opts.SSHKeyPath) != "" {
+		args = append(args, "-i", opts.SSHKeyPath)
+	}
+	return args
 }
 
 func shellQuote(value string) string {
