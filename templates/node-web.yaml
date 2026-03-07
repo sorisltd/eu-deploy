@@ -1,0 +1,31 @@
+# Example config for a Node/npm web app.
+version: 1
+project:
+  name: my-app
+  framework: auto
+build:
+  command: npm run build
+  output: dist
+runtime:
+  type: web
+  start: npm run start
+  port: 3000
+  healthcheck:
+    path: /
+    interval: 10s
+    timeout: 2s
+routes:
+  - hostname: my-app.eu-deploy.dev
+    path: /
+    target: web
+previews:
+  enabled: false
+  hostname_template: pr-{{pr}}.my-app.eu-deploy.dev
+  ttl_hours: 72
+hetzner:
+  host: ""
+  user: root
+  port: 22
+  ssh_key_path: ""
+  app_path: /opt/eu-deploy/my-app
+  service_port: 3000

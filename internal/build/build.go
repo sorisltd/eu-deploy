@@ -17,6 +17,7 @@ type Result struct {
 	SHA256       string `json:"sha256"`
 	CreatedAt    string `json:"created_at"`
 	OutputDir    string `json:"output_dir"`
+	InputHash    string `json:"input_hash"`
 }
 
 func WriteMetadata(path string, res Result) error {
@@ -44,6 +45,13 @@ func SHA256File(path string) (string, error) {
 // PackageDir creates a gzip tarball at destPath with the contents of srcDir.
 // The tarball includes the srcDir as the top-level folder.
 func PackageDir(srcDir, destPath string) error {
+	return PackageDirWithRoot(srcDir, destPath, filepath.Base(filepath.Clean(srcDir)))
+}
+
+// PackageDirWithRoot creates a gzip tarball at destPath with the contents of
+// srcDir nested under archiveRoot. If archiveRoot is empty, srcDir contents are
+// written at the archive root.
+func PackageDirWithRoot(srcDir, destPath, archiveRoot string) error {
 	out, err := os.Create(destPath)
 	if err != nil {
 		return err
@@ -57,19 +65,28 @@ func PackageDir(srcDir, destPath string) error {
 	defer tw.Close()
 
 	srcDir = filepath.Clean(srcDir)
-	parent := filepath.Dir(srcDir)
+	archiveRoot = strings.TrimSpace(filepath.ToSlash(archiveRoot))
 
 	return filepath.Walk(srcDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
 
-		rel, err := filepath.Rel(parent, path)
+		rel, err := filepath.Rel(srcDir, path)
 		if err != nil {
 			return err
 		}
 
-		name := filepath.ToSlash(rel)
+		name := archiveRoot
+		if rel != "." {
+			if archiveRoot == "" {
+				name = filepath.ToSlash(rel)
+			} else {
+				name = filepath.ToSlash(filepath.Join(archiveRoot, rel))
+			}
+		} else if archiveRoot == "" {
+			return nil
+		}
 		if info.IsDir() && !strings.HasSuffix(name, "/") {
 			name += "/"
 		}

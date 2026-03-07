@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 )
 
 type Result struct {
@@ -12,6 +14,7 @@ type Result struct {
 	BuildCommand string
 	StartCommand string
 	OutputDir    string
+	Warnings     []string
 }
 
 type pkgJSON struct {
@@ -24,21 +27,23 @@ type pkgJSON struct {
 func Detect(dir string) Result {
 	// Defaults (generic Node app)
 	res := Result{
-		Framework:    "auto",
-		ProjectName:  filepath.Base(dir),
-		BuildCommand: "npm run build",
-		StartCommand: "npm run start",
-		OutputDir:    "dist",
+		Framework:   "auto",
+		ProjectName: filepath.Base(dir),
+		OutputDir:   "dist",
 	}
 
 	p := filepath.Join(dir, "package.json")
 	b, err := os.ReadFile(p)
 	if err != nil {
+		res.BuildCommand = "npm run build"
+		res.StartCommand = "npm run start"
 		return res
 	}
 
 	var pj pkgJSON
 	if err := json.Unmarshal(b, &pj); err != nil {
+		res.BuildCommand = "npm run build"
+		res.StartCommand = "npm run start"
 		return res
 	}
 
@@ -65,18 +70,28 @@ func Detect(dir string) Result {
 	switch {
 	case has("next"):
 		res.Framework = "nextjs"
-		res.OutputDir = ".next"
-		res.StartCommand = "npm run start"
-	case has("@solidjs/start") || has("solid-start"):
-		res.Framework = "solidstart"
-		// Many SolidStart builds output to .output (Nitro-style) or dist depending on setup.
-		// Keep it conservative:
-		res.OutputDir = ".output"
-		res.StartCommand = "node .output/server/index.mjs"
+		if configMatches(dir, []string{"next.config.js", "next.config.mjs", "next.config.ts"}, `output\s*:\s*["']standalone["']`) {
+			res.OutputDir = ".next/standalone"
+			res.StartCommand = "node .next/standalone/server.js"
+		} else {
+			res.OutputDir = ".next"
+			res.StartCommand = "npm run start"
+			res.Warnings = append(res.Warnings, "Next.js detected without output: 'standalone'. Deploy will use .next plus installed production dependencies; standalone is still the leaner option.")
+		}
 	case has("@sveltejs/kit"):
 		res.Framework = "sveltekit"
-		res.OutputDir = ".svelte-kit"
-		res.StartCommand = "npm run preview"
+		if has("@sveltejs/adapter-node") || configUses(dir, []string{"svelte.config.js", "svelte.config.cjs", "svelte.config.mjs", "svelte.config.ts"}, "@sveltejs/adapter-node") {
+			res.OutputDir = "build"
+			res.StartCommand = "node build"
+		} else {
+			res.OutputDir = ""
+			res.StartCommand = ""
+			res.Warnings = append(res.Warnings, "SvelteKit detected without @sveltejs/adapter-node. Configure a deployable output and runtime.start manually.")
+		}
+	case has("@solidjs/start") || has("solid-start"):
+		res.Framework = "solidstart"
+		res.OutputDir = ".output"
+		res.StartCommand = "node .output/server/index.mjs"
 	case has("nuxt"):
 		res.Framework = "nuxt"
 		res.OutputDir = ".output"
@@ -85,18 +100,56 @@ func Detect(dir string) Result {
 		// remain auto
 	}
 
-	// Prefer real scripts if they exist
-	if pj.Scripts != nil {
-		if _, ok := pj.Scripts["build"]; ok {
-			res.BuildCommand = "npm run build"
-		}
-		if _, ok := pj.Scripts["start"]; ok {
-			res.StartCommand = "npm run start"
-		}
-		if _, ok := pj.Scripts["preview"]; ok && res.Framework == "sveltekit" {
-			res.StartCommand = "npm run preview"
+	res.BuildCommand = scriptCommand(pj.Scripts, "build")
+	if res.BuildCommand == "" {
+		res.Warnings = append(res.Warnings, "No build script found in package.json. Set build.command manually.")
+	}
+
+	if res.Framework == "auto" {
+		res.StartCommand = scriptCommand(pj.Scripts, "start")
+		if res.StartCommand == "" {
+			res.Warnings = append(res.Warnings, "No start script found in package.json. Set runtime.start manually.")
 		}
 	}
 
 	return res
+}
+
+func scriptCommand(scripts map[string]string, name string) string {
+	if scripts == nil {
+		return ""
+	}
+	if _, ok := scripts[name]; !ok {
+		return ""
+	}
+	return "npm run " + name
+}
+
+func configUses(dir string, names []string, needle string) bool {
+	for _, name := range names {
+		path := filepath.Join(dir, name)
+		b, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		if strings.Contains(string(b), needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func configMatches(dir string, names []string, pattern string) bool {
+	re := regexp.MustCompile(pattern)
+	for _, name := range names {
+		path := filepath.Join(dir, name)
+		b, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		if re.Match(b) {
+			return true
+		}
+	}
+	return false
 }

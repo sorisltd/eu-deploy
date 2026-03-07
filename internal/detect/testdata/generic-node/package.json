@@ -1,0 +1,7 @@
+{
+  "name": "generic-node",
+  "scripts": {
+    "build": "vite build",
+    "start": "node dist/server.js"
+  }
+}

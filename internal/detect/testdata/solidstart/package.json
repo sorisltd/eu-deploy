@@ -1,0 +1,9 @@
+{
+  "name": "solidstart-app",
+  "scripts": {
+    "build": "vinxi build"
+  },
+  "dependencies": {
+    "@solidjs/start": "^1.2.3"
+  }
+}

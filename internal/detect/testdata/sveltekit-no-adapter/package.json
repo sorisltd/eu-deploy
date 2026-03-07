@@ -1,0 +1,9 @@
+{
+  "name": "sveltekit-auto-app",
+  "scripts": {
+    "build": "vite build"
+  },
+  "devDependencies": {
+    "@sveltejs/kit": "^2.0.0"
+  }
+}

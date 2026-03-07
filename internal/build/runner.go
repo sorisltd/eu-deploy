@@ -34,6 +34,11 @@ func ReadMetadata(path string) (Result, error) {
 }
 
 func EnsureArtifact(cfg config.Config, workDir string, autoBuild bool) (Result, bool, error) {
+	currentHash, err := ComputeInputHash(cfg, workDir)
+	if err != nil {
+		return Result{}, false, err
+	}
+
 	metadataPath := filepath.Join(workDir, ".eudeploy", "build.json")
 	res, err := ReadMetadata(metadataPath)
 	if err == nil && strings.TrimSpace(res.ArtifactPath) != "" {
@@ -41,12 +46,17 @@ func EnsureArtifact(cfg config.Config, workDir string, autoBuild bool) (Result, 
 		if !filepath.IsAbs(artifactPath) {
 			artifactPath = filepath.Join(workDir, artifactPath)
 		}
-		if info, statErr := os.Stat(artifactPath); statErr == nil && !info.IsDir() {
-			return res, false, nil
+		if res.InputHash == currentHash {
+			if info, statErr := os.Stat(artifactPath); statErr == nil && !info.IsDir() {
+				return res, false, nil
+			}
 		}
 	}
 
 	if !autoBuild {
+		if strings.TrimSpace(res.ArtifactPath) != "" && res.InputHash != "" && res.InputHash != currentHash {
+			return Result{}, false, fmt.Errorf("build artifacts are stale: run `eu build` first")
+		}
 		return Result{}, false, fmt.Errorf("build artifacts missing: run `eu build` first")
 	}
 
@@ -65,19 +75,23 @@ func BuildProject(cfg config.Config, workDir string) (Result, error) {
 		return Result{}, fmt.Errorf("build.output is empty in eudeploy.yaml")
 	}
 
+	inputHash, err := ComputeInputHash(cfg, workDir)
+	if err != nil {
+		return Result{}, err
+	}
+
 	if err := utils.RunShellCommand(cfg.Build.Command, workDir); err != nil {
 		return Result{}, err
 	}
 
 	outputDir := cfg.Build.Output
-	outputPath := outputDir
-	if !filepath.IsAbs(outputDir) {
-		outputPath = filepath.Join(workDir, outputDir)
+	pkgSource, err := ResolvePackageSource(cfg, workDir)
+	if err != nil {
+		return Result{}, err
 	}
-	info, err := os.Stat(outputPath)
-	if err != nil || !info.IsDir() {
-		return Result{}, fmt.Errorf("build output folder not found: %s", outputDir)
-	}
+	defer func() {
+		_ = pkgSource.Cleanup()
+	}()
 
 	artifactDir := filepath.Join(workDir, ".eudeploy")
 	if err := os.MkdirAll(artifactDir, 0o755); err != nil {
@@ -88,7 +102,7 @@ func BuildProject(cfg config.Config, workDir string) (Result, error) {
 	artifactRel := filepath.Join(".eudeploy", fmt.Sprintf("%s.tar.gz", projectName))
 	artifactPath := filepath.Join(workDir, artifactRel)
 
-	if err := PackageDir(outputPath, artifactPath); err != nil {
+	if err := PackageDirWithRoot(pkgSource.SourceDir, artifactPath, pkgSource.ArchiveRoot); err != nil {
 		return Result{}, err
 	}
 
@@ -105,6 +119,7 @@ func BuildProject(cfg config.Config, workDir string) (Result, error) {
 		SHA256:       sha,
 		CreatedAt:    time.Now().UTC().Format(time.RFC3339),
 		OutputDir:    outputDir,
+		InputHash:    inputHash,
 	}
 
 	if err := WriteMetadata(metadataPath, res); err != nil {

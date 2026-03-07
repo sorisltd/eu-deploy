@@ -15,6 +15,7 @@ type Config struct {
 	Env      EnvSpec       `yaml:"env,omitempty"`
 	Previews PreviewSpec   `yaml:"previews,omitempty"`
 	Database *DatabaseSpec `yaml:"database,omitempty"`
+	Hetzner  *HetznerSpec  `yaml:"hetzner,omitempty"`
 }
 
 type ProjectSpec struct {
@@ -66,6 +67,15 @@ type DatabaseSpec struct {
 	} `yaml:"managed,omitempty"`
 }
 
+type HetznerSpec struct {
+	Host        string `yaml:"host"`
+	User        string `yaml:"user"`
+	Port        int    `yaml:"port,omitempty"`
+	SSHKeyPath  string `yaml:"ssh_key_path,omitempty"`
+	AppPath     string `yaml:"app_path,omitempty"`
+	ServicePort int    `yaml:"service_port,omitempty"`
+}
+
 func Default() Config {
 	return Config{
 		Version: 1,
@@ -82,7 +92,7 @@ func Default() Config {
 			Start: "npm run start",
 			Port:  3000,
 			Healthcheck: HealthcheckSpec{
-				Path:     "/health",
+				Path:     "/",
 				Interval: "10s",
 				Timeout:  "2s",
 			},

@@ -48,7 +48,7 @@ func main() {
 				Port:  3000,
 				Start: d.StartCommand,
 				Healthcheck: config.HealthcheckSpec{
-					Path:     "/health",
+					Path:     "/",
 					Interval: "10s",
 					Timeout:  "2s",
 				},
@@ -69,6 +69,9 @@ func main() {
 
 			fmt.Printf("OK Detected framework: %s\n", d.Framework)
 			fmt.Printf("OK Created %s\n", outPath)
+			for _, warning := range d.Warnings {
+				fmt.Printf("NOTE %s\n", warning)
+			}
 			return nil
 		},
 	}
@@ -108,7 +111,7 @@ func main() {
 
 	deployCmd := &cobra.Command{
 		Use:   "deploy",
-		Short: "Deploy the project (local Docker by default)",
+		Short: "Deploy the project locally with Docker or to a Hetzner VM",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			wd, err := os.Getwd()
 			if err != nil {
@@ -122,9 +125,6 @@ func main() {
 			if strings.TrimSpace(target) == "" {
 				target = "docker"
 			}
-			if target != "docker" {
-				return fmt.Errorf("unsupported target: %s", target)
-			}
 
 			cfgPath := filepath.Join(wd, "eudeploy.yaml")
 			cfg, err := config.ReadYAML(cfgPath)
@@ -134,77 +134,31 @@ func main() {
 				}
 				return err
 			}
-
-			res, built, err := build.EnsureArtifact(cfg, wd, true)
-			if err != nil {
-				return err
-			}
-			if built {
-				fmt.Printf("OK Build complete\n")
+			if runtimeType := strings.TrimSpace(cfg.Runtime.Type); runtimeType != "" && runtimeType != "web" {
+				return fmt.Errorf("unsupported runtime.type: %s", runtimeType)
 			}
 
-			if strings.TrimSpace(cfg.Runtime.Start) == "" {
-				return fmt.Errorf("runtime.start is empty in eudeploy.yaml")
+			switch target {
+			case "docker":
+				return runDockerDeploy(cmd, cfg, wd)
+			case "hetzner":
+				changed, envValues, err := deploy.PrepareHetznerConfig(&cfg, wd)
+				if err != nil {
+					return err
+				}
+				if changed {
+					if err := config.WriteYAML(cfgPath, cfg); err != nil {
+						return err
+					}
+					fmt.Printf("OK Updated %s\n", filepath.Base(cfgPath))
+				}
+				return runHetznerDeploy(cfg, wd, envValues)
+			default:
+				return fmt.Errorf("unsupported target: %s", target)
 			}
-			if cfg.Runtime.Port == 0 {
-				return fmt.Errorf("runtime.port is empty in eudeploy.yaml")
-			}
-
-			port, err := cmd.Flags().GetInt("port")
-			if err != nil {
-				return err
-			}
-			if port == 0 {
-				port = cfg.Runtime.Port
-			}
-
-			nameFlag, err := cmd.Flags().GetString("name")
-			if err != nil {
-				return err
-			}
-
-			projectName := build.ArtifactName(cfg, wd)
-			safeProject := deploy.SanitizeDockerName(projectName)
-
-			containerName := strings.TrimSpace(nameFlag)
-			if containerName == "" {
-				containerName = fmt.Sprintf("eu-%s", safeProject)
-			}
-			containerName = deploy.SanitizeDockerName(containerName)
-
-			imageTag := fmt.Sprintf("eu-deploy-%s:local", safeProject)
-
-			detach, err := cmd.Flags().GetBool("detach")
-			if err != nil {
-				return err
-			}
-
-			opts := deploy.DockerOptions{
-				WorkDir:       wd,
-				ArtifactPath:  res.ArtifactPath,
-				RuntimeStart:  cfg.Runtime.Start,
-				ContainerPort: cfg.Runtime.Port,
-				HostPort:      port,
-				ImageTag:      imageTag,
-				ContainerName: containerName,
-				Detach:        detach,
-			}
-
-			if err := deploy.BuildDockerImage(opts); err != nil {
-				return err
-			}
-
-			fmt.Printf("OK Image: %s\n", imageTag)
-			fmt.Printf("OK Container: %s\n", containerName)
-			fmt.Printf("✓ Running at http://localhost:%d\n", port)
-
-			if err := deploy.RunDockerContainer(opts); err != nil {
-				return err
-			}
-			return nil
 		},
 	}
-	deployCmd.Flags().String("target", "docker", "Deployment target (docker)")
+	deployCmd.Flags().String("target", "docker", "Deployment target (docker|hetzner)")
 	deployCmd.Flags().Int("port", 0, "Host port (default runtime.port)")
 	deployCmd.Flags().Bool("detach", false, "Run container in background")
 	deployCmd.Flags().String("name", "", "Container name (default: eu-<project>)")
@@ -214,4 +168,146 @@ func main() {
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
 	}
+}
+
+func runDockerDeploy(cmd *cobra.Command, cfg config.Config, wd string) error {
+	res, built, err := build.EnsureArtifact(cfg, wd, true)
+	if err != nil {
+		return err
+	}
+	if built {
+		fmt.Printf("OK Build complete\n")
+	}
+
+	if strings.TrimSpace(cfg.Runtime.Start) == "" {
+		return fmt.Errorf("runtime.start is empty in eudeploy.yaml")
+	}
+	if cfg.Runtime.Port == 0 {
+		return fmt.Errorf("runtime.port is empty in eudeploy.yaml")
+	}
+
+	port, err := cmd.Flags().GetInt("port")
+	if err != nil {
+		return err
+	}
+	if port == 0 {
+		port = cfg.Runtime.Port
+	}
+
+	nameFlag, err := cmd.Flags().GetString("name")
+	if err != nil {
+		return err
+	}
+
+	projectName := build.ArtifactName(cfg, wd)
+	safeProject := deploy.SanitizeDockerName(projectName)
+
+	containerName := strings.TrimSpace(nameFlag)
+	if containerName == "" {
+		containerName = fmt.Sprintf("eu-%s", safeProject)
+	}
+	containerName = deploy.SanitizeDockerName(containerName)
+
+	imageTag := fmt.Sprintf("eu-deploy-%s:local", safeProject)
+
+	detach, err := cmd.Flags().GetBool("detach")
+	if err != nil {
+		return err
+	}
+	installDependencies, err := build.RequiresDependencyInstall(cfg, wd)
+	if err != nil {
+		return err
+	}
+
+	opts := deploy.DockerOptions{
+		WorkDir:             wd,
+		ArtifactPath:        res.ArtifactPath,
+		RuntimeStart:        cfg.Runtime.Start,
+		ContainerPort:       cfg.Runtime.Port,
+		HostPort:            port,
+		ImageTag:            imageTag,
+		ContainerName:       containerName,
+		Detach:              detach,
+		InstallDependencies: installDependencies,
+	}
+
+	if err := deploy.BuildDockerImage(opts); err != nil {
+		return err
+	}
+
+	fmt.Printf("OK Image: %s\n", imageTag)
+	if detach {
+		fmt.Printf("Starting container %s in background...\n", containerName)
+	} else {
+		fmt.Printf("Starting container %s in attached mode on http://localhost:%d\n", containerName, port)
+	}
+
+	if err := deploy.RunDockerContainer(opts); err != nil {
+		return err
+	}
+	if detach {
+		fmt.Printf("OK Container: %s\n", containerName)
+		fmt.Printf("✓ Running at http://localhost:%d\n", port)
+	}
+	return nil
+}
+
+func runHetznerDeploy(cfg config.Config, wd string, envValues map[string]string) error {
+	res, built, err := build.EnsureArtifact(cfg, wd, true)
+	if err != nil {
+		return err
+	}
+	if built {
+		fmt.Printf("OK Build complete\n")
+	}
+
+	if strings.TrimSpace(cfg.Runtime.Start) == "" {
+		return fmt.Errorf("runtime.start is empty in eudeploy.yaml")
+	}
+	if cfg.Runtime.Port == 0 {
+		return fmt.Errorf("runtime.port is empty in eudeploy.yaml")
+	}
+	if cfg.Hetzner == nil {
+		return fmt.Errorf("hetzner config is missing")
+	}
+	if len(cfg.Routes) == 0 || strings.TrimSpace(cfg.Routes[0].Hostname) == "" {
+		return fmt.Errorf("routes[0].hostname is required for hetzner deploys")
+	}
+
+	projectName := build.ArtifactName(cfg, wd)
+	safeProject := deploy.SanitizeDockerName(projectName)
+	installDependencies, err := build.RequiresDependencyInstall(cfg, wd)
+	if err != nil {
+		return err
+	}
+
+	opts := deploy.HetznerOptions{
+		WorkDir:             wd,
+		ArtifactPath:        res.ArtifactPath,
+		RuntimeStart:        cfg.Runtime.Start,
+		ContainerPort:       cfg.Runtime.Port,
+		ServicePort:         cfg.Hetzner.ServicePort,
+		ImageTag:            fmt.Sprintf("eu-deploy-%s:remote", safeProject),
+		AppContainerName:    fmt.Sprintf("eu-%s-app", safeProject),
+		ProxyContainerName:  fmt.Sprintf("eu-%s-caddy", safeProject),
+		InstallDependencies: installDependencies,
+		RemoteHost:          cfg.Hetzner.Host,
+		RemoteUser:          cfg.Hetzner.User,
+		RemotePort:          cfg.Hetzner.Port,
+		SSHKeyPath:          cfg.Hetzner.SSHKeyPath,
+		RemoteAppPath:       cfg.Hetzner.AppPath,
+		Hostname:            cfg.Routes[0].Hostname,
+		RoutePath:           cfg.Routes[0].Path,
+		HealthcheckPath:     cfg.Runtime.Healthcheck.Path,
+		Env:                 envValues,
+	}
+
+	fmt.Printf("Uploading release to %s@%s...\n", cfg.Hetzner.User, cfg.Hetzner.Host)
+	if err := deploy.DeployToHetzner(opts); err != nil {
+		return err
+	}
+
+	fmt.Printf("OK Remote app path: %s\n", cfg.Hetzner.AppPath)
+	fmt.Printf("✓ Running at https://%s\n", cfg.Routes[0].Hostname)
+	return nil
 }

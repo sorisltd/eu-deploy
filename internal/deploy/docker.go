@@ -11,14 +11,15 @@ import (
 )
 
 type DockerOptions struct {
-	WorkDir       string
-	ArtifactPath  string
-	RuntimeStart  string
-	ContainerPort int
-	HostPort      int
-	ImageTag      string
-	ContainerName string
-	Detach        bool
+	WorkDir             string
+	ArtifactPath        string
+	RuntimeStart        string
+	ContainerPort       int
+	HostPort            int
+	ImageTag            string
+	ContainerName       string
+	Detach              bool
+	InstallDependencies bool
 }
 
 func SanitizeDockerName(name string) string {
@@ -71,8 +72,10 @@ func BuildDockerImage(opts DockerOptions) error {
 		return fmt.Errorf("build artifact not found: %s", opts.ArtifactPath)
 	}
 
-	if _, err := os.Stat(filepath.Join(opts.WorkDir, "package.json")); err != nil {
-		return fmt.Errorf("package.json not found: docker target requires a Node project")
+	if opts.InstallDependencies {
+		if _, err := os.Stat(filepath.Join(opts.WorkDir, "package.json")); err != nil {
+			return fmt.Errorf("package.json not found: docker target requires a Node project")
+		}
 	}
 
 	dockerDir := filepath.Join(opts.WorkDir, ".eudeploy")
@@ -136,11 +139,20 @@ func dockerfileContents(opts DockerOptions) string {
 		"FROM node:20-slim",
 		"WORKDIR /app",
 		"ENV NODE_ENV=production",
-		"COPY package*.json ./",
-		"RUN if [ -f package-lock.json ]; then npm ci --omit=dev; else npm install --omit=dev; fi",
+		dockerfileInstallStep(opts.InstallDependencies),
 		fmt.Sprintf("ADD %s /app/", artifactRel),
 		fmt.Sprintf("EXPOSE %d", opts.ContainerPort),
 		fmt.Sprintf("CMD [\"bash\",\"-lc\",%s]", strconv.Quote(opts.RuntimeStart)),
 		"",
+	}, "\n")
+}
+
+func dockerfileInstallStep(installDependencies bool) string {
+	if !installDependencies {
+		return ""
+	}
+	return strings.Join([]string{
+		"COPY package*.json ./",
+		"RUN if [ -f package-lock.json ]; then npm ci --omit=dev; else npm install --omit=dev; fi",
 	}, "\n")
 }
