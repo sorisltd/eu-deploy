@@ -22,6 +22,14 @@ previews:
   enabled: false
   hostname_template: pr-{{pr}}.my-app.eu-deploy.dev
   ttl_hours: 72
+# Optional: shared PostgreSQL on the Hetzner server for small sites.
+# database:
+#   mode: shared
+#   shared:
+#     engine: postgres
+#     version: "16"
+#     name: my_app
+#     user: my_app
 hetzner:
   host: ""
   user: root

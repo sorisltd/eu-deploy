@@ -18,9 +18,10 @@ type HetznerBootstrapOptions struct {
 	RemoteAppPath    string
 	InstallUFW       bool
 	InstallFail2ban  bool
+	SharedDatabase   *SharedDatabaseOptions
 }
 
-func PromptHetznerBootstrapOptions(spec config.HetznerSpec) (HetznerBootstrapOptions, error) {
+func PromptHetznerBootstrapOptions(cfg config.Config) (HetznerBootstrapOptions, error) {
 	p := &linePrompter{
 		in:  bufio.NewReader(os.Stdin),
 		out: os.Stdout,
@@ -35,15 +36,31 @@ func PromptHetznerBootstrapOptions(spec config.HetznerSpec) (HetznerBootstrapOpt
 		return HetznerBootstrapOptions{}, err
 	}
 
+	var sharedDatabase *SharedDatabaseOptions
+	if usesSharedDatabase(cfg.Database) {
+		installSharedPostgres, err := p.Bool("Install and start shared PostgreSQL", true)
+		if err != nil {
+			return HetznerBootstrapOptions{}, err
+		}
+		if installSharedPostgres {
+			sharedDatabase = &SharedDatabaseOptions{
+				Version: cfg.Database.Shared.Version,
+				Name:    cfg.Database.Shared.Name,
+				User:    cfg.Database.Shared.User,
+			}
+		}
+	}
+
 	return HetznerBootstrapOptions{
-		RemoteHost:       spec.Host,
-		RemoteUser:       spec.User,
-		RemotePort:       spec.Port,
-		SSHKeyPath:       spec.SSHKeyPath,
-		RemoteServerPath: effectiveHetznerServerPath(spec, ""),
-		RemoteAppPath:    spec.AppPath,
+		RemoteHost:       cfg.Hetzner.Host,
+		RemoteUser:       cfg.Hetzner.User,
+		RemotePort:       cfg.Hetzner.Port,
+		SSHKeyPath:       cfg.Hetzner.SSHKeyPath,
+		RemoteServerPath: effectiveHetznerServerPath(*cfg.Hetzner, ""),
+		RemoteAppPath:    cfg.Hetzner.AppPath,
 		InstallUFW:       installUFW,
 		InstallFail2ban:  installFail2ban,
+		SharedDatabase:   sharedDatabase,
 	}, nil
 }
 
@@ -103,6 +120,13 @@ func renderHetznerBootstrapScript(opts HetznerBootstrapOptions) string {
 		fmt.Sprintf("$SUDO mkdir -p %s", shellQuote(filepathJoinSlash(proxyRoot, "sites"))),
 		fmt.Sprintf("$SUDO mkdir -p %s", shellQuote(filepathJoinSlash(proxyRoot, "data"))),
 		fmt.Sprintf("$SUDO mkdir -p %s", shellQuote(filepathJoinSlash(proxyRoot, "config"))),
+		fmt.Sprintf("$SUDO docker network inspect %s >/dev/null 2>&1 || $SUDO docker network create %s >/dev/null",
+			shellQuote(sharedDockerNetwork),
+			shellQuote(sharedDockerNetwork)),
+	}
+
+	if opts.SharedDatabase != nil {
+		lines = append(lines, renderSharedPostgresBootstrapCommands(opts.RemoteServerPath, *opts.SharedDatabase)...)
 	}
 
 	if opts.InstallUFW {
@@ -126,4 +150,33 @@ func renderHetznerBootstrapScript(opts HetznerBootstrapOptions) string {
 
 func filepathJoinSlash(parts ...string) string {
 	return strings.ReplaceAll(strings.Join(parts, "/"), "//", "/")
+}
+
+func renderSharedPostgresBootstrapCommands(serverPath string, opts SharedDatabaseOptions) []string {
+	postgresRoot := sharedPostgresRoot(serverPath)
+	postgresDataPath := filepathJoinSlash(postgresRoot, "data")
+	postgresEnvPath := filepathJoinSlash(postgresRoot, "postgres.env")
+
+	return []string{
+		fmt.Sprintf("mkdir -p %s", shellQuote(postgresRoot)),
+		fmt.Sprintf("mkdir -p %s", shellQuote(postgresDataPath)),
+		fmt.Sprintf("if [ ! -f %s ]; then", shellQuote(postgresEnvPath)),
+		"  POSTGRES_PASSWORD=$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 40)",
+		fmt.Sprintf("  umask 077 && printf 'POSTGRES_PASSWORD=%%s\\n' \"$POSTGRES_PASSWORD\" > %s", shellQuote(postgresEnvPath)),
+		"fi",
+		fmt.Sprintf("$SUDO docker pull %s >/dev/null", shellQuote(sharedPostgresImage(opts))),
+		fmt.Sprintf("if ! $SUDO docker ps -a --format '{{.Names}}' | grep -Fx -- %s >/dev/null 2>&1; then", shellQuote(sharedPostgresContainer)),
+		fmt.Sprintf("  $SUDO docker run -d --restart unless-stopped --network %s -p 127.0.0.1:5432:5432 --name %s --env-file %s -v %s:/var/lib/postgresql/data %s >/dev/null",
+			shellQuote(sharedDockerNetwork),
+			shellQuote(sharedPostgresContainer),
+			shellQuote(postgresEnvPath),
+			shellQuote(postgresDataPath),
+			shellQuote(sharedPostgresImage(opts))),
+		"else",
+		fmt.Sprintf("  $SUDO docker start %s >/dev/null 2>&1 || true", shellQuote(sharedPostgresContainer)),
+		"fi",
+		fmt.Sprintf("$SUDO docker network connect %s %s >/dev/null 2>&1 || true",
+			shellQuote(sharedDockerNetwork),
+			shellQuote(sharedPostgresContainer)),
+	}
 }

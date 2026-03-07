@@ -79,6 +79,11 @@ func TestRenderHetznerBootstrapScript(t *testing.T) {
 		RemoteAppPath:    "/opt/eu-deploy/apps/massage",
 		InstallUFW:       true,
 		InstallFail2ban:  true,
+		SharedDatabase: &SharedDatabaseOptions{
+			Version: "16",
+			Name:    "massage",
+			User:    "massage",
+		},
 	})
 
 	for _, expected := range []string{
@@ -87,6 +92,8 @@ func TestRenderHetznerBootstrapScript(t *testing.T) {
 		"$SUDO mkdir -p '/opt/eu-deploy'",
 		"$SUDO mkdir -p '/opt/eu-deploy/apps/massage'",
 		"$SUDO mkdir -p '/opt/eu-deploy/_proxy/sites'",
+		"$SUDO docker network inspect 'eu-deploy' >/dev/null 2>&1 || $SUDO docker network create 'eu-deploy' >/dev/null",
+		"$SUDO docker run -d --restart unless-stopped --network 'eu-deploy' -p 127.0.0.1:5432:5432 --name 'eu-shared-postgres'",
 		"$SUDO apt-get install -y ufw",
 		"$SUDO apt-get install -y fail2ban",
 	} {
@@ -111,5 +118,53 @@ func TestInterpretServicePortCheck(t *testing.T) {
 	}
 	if got := interpretServicePortCheck("busy", 3001); got.Status != PreflightFailure {
 		t.Fatalf("expected failure for busy service port, got %s", got.Status)
+	}
+}
+
+func TestInterpretSharedNetworkCheck(t *testing.T) {
+	if got := interpretSharedNetworkCheck("present"); got.Status != PreflightOK {
+		t.Fatalf("expected OK for existing shared network, got %s", got.Status)
+	}
+	if got := interpretSharedNetworkCheck("missing"); got.Status != PreflightWarning {
+		t.Fatalf("expected warning for missing shared network, got %s", got.Status)
+	}
+}
+
+func TestInterpretSharedPostgresCheck(t *testing.T) {
+	if got := interpretSharedPostgresCheck("postgres"); got.Status != PreflightOK {
+		t.Fatalf("expected OK for running shared postgres, got %s", got.Status)
+	}
+	if got := interpretSharedPostgresCheck("missing"); got.Status != PreflightWarning {
+		t.Fatalf("expected warning for missing shared postgres, got %s", got.Status)
+	}
+	if got := interpretSharedPostgresCheck("busy"); got.Status != PreflightFailure {
+		t.Fatalf("expected failure for busy postgres port, got %s", got.Status)
+	}
+}
+
+func TestSanitizePostgresIdentifier(t *testing.T) {
+	if got := sanitizePostgresIdentifier("Masazo Terapija"); got != "masazo_terapija" {
+		t.Fatalf("unexpected postgres identifier: %s", got)
+	}
+	if got := sanitizePostgresIdentifier("123-demo"); got != "app_123_demo" {
+		t.Fatalf("unexpected postgres identifier with numeric prefix: %s", got)
+	}
+}
+
+func TestRenderSharedDatabaseSQL(t *testing.T) {
+	got := renderSharedDatabaseSQL(SharedDatabaseOptions{
+		Name: "masazo_terapija",
+		User: "masazo_terapija",
+	})
+
+	for _, expected := range []string{
+		`SELECT set_config('eu_deploy.app_password', :'db_password', false);`,
+		`CREATE ROLE "masazo_terapija" LOGIN PASSWORD `,
+		`ALTER ROLE "masazo_terapija" WITH LOGIN PASSWORD `,
+		`CREATE DATABASE "masazo_terapija" OWNER "masazo_terapija"`,
+	} {
+		if !strings.Contains(got, expected) {
+			t.Fatalf("shared database SQL missing %q:\n%s", expected, got)
+		}
 	}
 }

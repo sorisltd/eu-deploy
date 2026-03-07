@@ -59,12 +59,20 @@ type PreviewSpec struct {
 }
 
 type DatabaseSpec struct {
-	Mode    string `yaml:"mode"` // external|managed
+	Mode    string `yaml:"mode"` // external|managed|shared
 	Managed *struct {
 		Plan   string `yaml:"plan"`
 		Region string `yaml:"region"`
 		PITR   bool   `yaml:"pitr"`
 	} `yaml:"managed,omitempty"`
+	Shared *SharedDatabaseSpec `yaml:"shared,omitempty"`
+}
+
+type SharedDatabaseSpec struct {
+	Engine  string `yaml:"engine,omitempty"`  // postgres
+	Version string `yaml:"version,omitempty"` // postgres image tag, e.g. 16
+	Name    string `yaml:"name,omitempty"`
+	User    string `yaml:"user,omitempty"`
 }
 
 type HetznerSpec struct {

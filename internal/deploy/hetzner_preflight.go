@@ -122,6 +122,30 @@ func PreflightHetzner(opts HetznerOptions) ([]PreflightResult, error) {
 		results = append(results, interpretServicePortCheck(strings.TrimSpace(serviceStatus), opts.ServicePort))
 	}
 
+	if opts.SharedDatabase != nil {
+		networkStatus, err := runRemoteCommandCapture(opts, true, renderRemoteSharedNetworkCheck(sharedDockerNetwork))
+		if err != nil {
+			results = append(results, PreflightResult{
+				Name:   "Shared Docker network",
+				Status: PreflightWarning,
+				Detail: strings.TrimSpace(err.Error()),
+			})
+		} else {
+			results = append(results, interpretSharedNetworkCheck(strings.TrimSpace(networkStatus)))
+		}
+
+		postgresStatus, err := runRemoteCommandCapture(opts, true, renderRemoteSharedPostgresCheck(sharedPostgresContainer))
+		if err != nil {
+			results = append(results, PreflightResult{
+				Name:   "Shared PostgreSQL",
+				Status: PreflightWarning,
+				Detail: strings.TrimSpace(err.Error()),
+			})
+		} else {
+			results = append(results, interpretSharedPostgresCheck(strings.TrimSpace(postgresStatus)))
+		}
+	}
+
 	tlsStatus := PreflightWarning
 	tlsDetail := "cannot prove certificate issuance before deploy, but the prerequisites are not fully in place yet"
 	if dnsMatches && hasAcceptableProxyState(results) {
@@ -253,6 +277,28 @@ func renderRemoteServicePortCheck(port int, appContainerName string) string {
 	}, "\n")
 }
 
+func renderRemoteSharedNetworkCheck(networkName string) string {
+	return strings.Join([]string{
+		"if docker network inspect " + shellQuote(networkName) + " >/dev/null 2>&1; then",
+		"  echo present",
+		"else",
+		"  echo missing",
+		"fi",
+	}, "\n")
+}
+
+func renderRemoteSharedPostgresCheck(containerName string) string {
+	return strings.Join([]string{
+		"if docker ps --format '{{.Names}}' | grep -Fx -- " + shellQuote(containerName) + " >/dev/null 2>&1; then",
+		"  echo postgres",
+		"elif command -v ss >/dev/null 2>&1 && ss -ltn '( sport = :5432 )' | tail -n +2 | grep -q .; then",
+		"  echo busy",
+		"else",
+		"  echo missing",
+		"fi",
+	}, "\n")
+}
+
 func interpretSharedProxyCheck(status string) PreflightResult {
 	switch status {
 	case "proxy":
@@ -295,6 +341,46 @@ func interpretServicePortCheck(status string, port int) PreflightResult {
 			Name:   "Service port",
 			Status: PreflightFailure,
 			Detail: fmt.Sprintf("127.0.0.1:%d is already in use by something else", port),
+		}
+	}
+}
+
+func interpretSharedNetworkCheck(status string) PreflightResult {
+	switch status {
+	case "present":
+		return PreflightResult{
+			Name:   "Shared Docker network",
+			Status: PreflightOK,
+			Detail: "the shared Docker network already exists",
+		}
+	default:
+		return PreflightResult{
+			Name:   "Shared Docker network",
+			Status: PreflightWarning,
+			Detail: "the shared Docker network does not exist yet; bootstrap or deploy will create it",
+		}
+	}
+}
+
+func interpretSharedPostgresCheck(status string) PreflightResult {
+	switch status {
+	case "postgres":
+		return PreflightResult{
+			Name:   "Shared PostgreSQL",
+			Status: PreflightOK,
+			Detail: "shared PostgreSQL is already running on 127.0.0.1:5432",
+		}
+	case "missing":
+		return PreflightResult{
+			Name:   "Shared PostgreSQL",
+			Status: PreflightWarning,
+			Detail: "shared PostgreSQL is not running yet; bootstrap or deploy will create it",
+		}
+	default:
+		return PreflightResult{
+			Name:   "Shared PostgreSQL",
+			Status: PreflightFailure,
+			Detail: "127.0.0.1:5432 is already in use by something other than the shared PostgreSQL container",
 		}
 	}
 }

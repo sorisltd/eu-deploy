@@ -143,19 +143,19 @@ func main() {
 			case "docker":
 				return runDockerDeploy(cmd, cfg, wd)
 			case "hetzner":
-				changed, envValues, err := deploy.PrepareHetznerConfig(&cfg, wd, deploy.PrepareHetznerConfigOptions{
+				prepared, err := deploy.PrepareHetznerConfig(&cfg, wd, deploy.PrepareHetznerConfigOptions{
 					PromptEnv: true,
 				})
 				if err != nil {
 					return err
 				}
-				if changed {
+				if prepared.Changed {
 					if err := config.WriteYAML(cfgPath, cfg); err != nil {
 						return err
 					}
 					fmt.Printf("OK Updated %s\n", filepath.Base(cfgPath))
 				}
-				return runHetznerDeploy(cfg, wd, envValues)
+				return runHetznerDeploy(cfg, wd, prepared)
 			default:
 				return fmt.Errorf("unsupported target: %s", target)
 			}
@@ -189,11 +189,11 @@ func main() {
 				return fmt.Errorf("unsupported runtime.type: %s", runtimeType)
 			}
 
-			changed, _, err := deploy.PrepareHetznerConfig(&cfg, wd, deploy.PrepareHetznerConfigOptions{})
+			prepared, err := deploy.PrepareHetznerConfig(&cfg, wd, deploy.PrepareHetznerConfigOptions{})
 			if err != nil {
 				return err
 			}
-			if changed {
+			if prepared.Changed {
 				if err := config.WriteYAML(cfgPath, cfg); err != nil {
 					return err
 				}
@@ -228,11 +228,11 @@ func main() {
 				return fmt.Errorf("unsupported runtime.type: %s", runtimeType)
 			}
 
-			changed, _, err := deploy.PrepareHetznerConfig(&cfg, wd, deploy.PrepareHetznerConfigOptions{})
+			prepared, err := deploy.PrepareHetznerConfig(&cfg, wd, deploy.PrepareHetznerConfigOptions{})
 			if err != nil {
 				return err
 			}
-			if changed {
+			if prepared.Changed {
 				if err := config.WriteYAML(cfgPath, cfg); err != nil {
 					return err
 				}
@@ -242,7 +242,7 @@ func main() {
 				return fmt.Errorf("hetzner config is missing")
 			}
 
-			opts, err := deploy.PromptHetznerBootstrapOptions(*cfg.Hetzner)
+			opts, err := deploy.PromptHetznerBootstrapOptions(cfg)
 			if err != nil {
 				return err
 			}
@@ -351,7 +351,7 @@ func runDockerDeploy(cmd *cobra.Command, cfg config.Config, wd string) error {
 	return nil
 }
 
-func runHetznerDeploy(cfg config.Config, wd string, envValues map[string]string) error {
+func runHetznerDeploy(cfg config.Config, wd string, prepared deploy.PrepareHetznerResult) error {
 	res, built, err := build.EnsureArtifact(cfg, wd, true)
 	if err != nil {
 		return err
@@ -380,10 +380,10 @@ func runHetznerDeploy(cfg config.Config, wd string, envValues map[string]string)
 		return err
 	}
 
-	opts := buildHetznerOptions(cfg, wd, safeProject)
+	opts := buildHetznerOptions(cfg, wd, safeProject, prepared.SharedDatabasePassword)
 	opts.ArtifactPath = res.ArtifactPath
 	opts.InstallDependencies = installDependencies
-	opts.Env = envValues
+	opts.Env = prepared.EnvValues
 
 	fmt.Printf("Uploading release to %s@%s...\n", cfg.Hetzner.User, cfg.Hetzner.Host)
 	if err := deploy.DeployToHetzner(opts); err != nil {
@@ -398,7 +398,7 @@ func runHetznerDeploy(cfg config.Config, wd string, envValues map[string]string)
 
 func runHetznerPreflight(cfg config.Config, wd string) error {
 	projectName := build.ArtifactName(cfg, wd)
-	opts := buildHetznerOptions(cfg, wd, deploy.SanitizeDockerName(projectName))
+	opts := buildHetznerOptions(cfg, wd, deploy.SanitizeDockerName(projectName), "")
 
 	results, err := deploy.PreflightHetzner(opts)
 	if err != nil {
@@ -433,8 +433,8 @@ func runHetznerPreflight(cfg config.Config, wd string) error {
 	return nil
 }
 
-func buildHetznerOptions(cfg config.Config, wd, safeProject string) deploy.HetznerOptions {
-	return deploy.HetznerOptions{
+func buildHetznerOptions(cfg config.Config, wd, safeProject, sharedDatabasePassword string) deploy.HetznerOptions {
+	opts := deploy.HetznerOptions{
 		WorkDir:            wd,
 		RuntimeStart:       cfg.Runtime.Start,
 		ContainerPort:      cfg.Runtime.Port,
@@ -453,6 +453,17 @@ func buildHetznerOptions(cfg config.Config, wd, safeProject string) deploy.Hetzn
 		HealthcheckPath:    cfg.Runtime.Healthcheck.Path,
 		SiteConfigName:     deploy.BuildHetznerSiteConfigName(cfg.Routes[0].Hostname),
 	}
+
+	if cfg.Database != nil && strings.TrimSpace(cfg.Database.Mode) == "shared" && cfg.Database.Shared != nil {
+		opts.SharedDatabase = &deploy.SharedDatabaseOptions{
+			Version:  cfg.Database.Shared.Version,
+			Name:     cfg.Database.Shared.Name,
+			User:     cfg.Database.Shared.User,
+			Password: sharedDatabasePassword,
+		}
+	}
+
+	return opts
 }
 
 func loadConfigFromWorkingDir() (config.Config, string, string, error) {

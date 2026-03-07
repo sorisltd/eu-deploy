@@ -27,7 +27,7 @@ The checked-in sample config lives at `templates/node-web.yaml`. This repository
 
 `eu bootstrap`
 - Connects to a Hetzner VM over SSH and prepares it for `eu-deploy`.
-- Use this first on a fresh server. It can install Docker, create the expected directories, and optionally configure UFW and fail2ban.
+- Use this first on a fresh server. It can install Docker, create the expected directories, optionally configure UFW and fail2ban, and start a shared PostgreSQL container when `database.mode: shared` is configured.
 
 `eu preflight`
 - Checks whether the configured Hetzner VM looks ready for deployment.
@@ -35,7 +35,7 @@ The checked-in sample config lives at `templates/node-web.yaml`. This repository
 
 `eu deploy`
 - `eu deploy` uses local Docker by default.
-- `eu deploy --target hetzner` builds the app if needed, uploads the artifact, starts or updates the app container, and refreshes the shared Caddy proxy config on the server.
+- `eu deploy --target hetzner` builds the app if needed, uploads the artifact, starts or updates the app container, refreshes the shared Caddy proxy config on the server, and can provision one PostgreSQL database/user per app on the same VM.
 
 ## Typical usage
 
@@ -71,6 +71,27 @@ Adding another website to the same Hetzner server:
 # set a different hostname, app_path, and service_port
 ./eu preflight
 ./eu deploy --target hetzner
+```
+
+Using one shared PostgreSQL service on the same server:
+
+```yaml
+database:
+  mode: shared
+  shared:
+    engine: postgres
+    version: "16"
+    name: my_app
+    user: my_app
+```
+
+- `eu bootstrap` starts one shared `eu-shared-postgres` container on `127.0.0.1:5432`.
+- `eu deploy --target hetzner` creates or updates the app-specific PostgreSQL role and database and injects `DATABASE_URL` into the app container automatically.
+- App-specific migrations or setup scripts are still your responsibility; `eu-deploy` does not run them automatically yet.
+- For local setup or migrations, tunnel into the server:
+
+```bash
+ssh -L 5432:127.0.0.1:5432 root@your-server
 ```
 
 Framework notes:
@@ -127,6 +148,8 @@ On the first Hetzner workflow, the CLI will prompt for:
 
 `eu bootstrap` installs Docker on Debian/Ubuntu-style hosts, enables the Docker daemon, optionally configures UFW and fail2ban, and creates the expected `server_path`, app, and shared proxy directories.
 
+When `database.mode: shared` is enabled, `eu bootstrap` also creates the shared Docker network and starts a shared PostgreSQL container bound to `127.0.0.1:5432` on the server.
+
 `eu preflight` verifies:
 - local `ssh` and `scp`
 - the Hetzner server address resolves
@@ -136,12 +159,14 @@ On the first Hetzner workflow, the CLI will prompt for:
 - write access to the configured server and app paths
 - whether ports `80/443` are free or already owned by the shared proxy
 - whether the app's loopback `service_port` is free
+- when `database.mode: shared` is enabled, whether the shared Docker network exists and whether PostgreSQL is already running or port `5432` is blocked by something else
 
 The Hetzner target uploads the build artifact, generates a remote Docker image, runs the app on `127.0.0.1:<service_port>`, and updates a shared Caddy container on the server. That shared proxy model is what allows multiple small websites to coexist on one VM:
 
 - one Caddy container owns ports `80/443`
 - each app runs in its own Docker container on a different loopback port
 - each deploy writes one per-site Caddy snippet keyed by hostname
+- optional: one shared PostgreSQL container serves multiple apps, each with its own database and role
 
 Example multi-site layout:
 

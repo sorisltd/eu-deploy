@@ -15,8 +15,11 @@ import (
 )
 
 const (
-	sharedProxyContainer = "eu-shared-caddy"
-	sharedProxyDirName   = "_proxy"
+	sharedProxyContainer    = "eu-shared-caddy"
+	sharedProxyDirName      = "_proxy"
+	sharedDockerNetwork     = "eu-deploy"
+	sharedPostgresDirName   = "_postgres"
+	sharedPostgresContainer = "eu-shared-postgres"
 )
 
 type HetznerOptions struct {
@@ -39,14 +42,28 @@ type HetznerOptions struct {
 	RoutePath           string
 	HealthcheckPath     string
 	SiteConfigName      string
+	SharedDatabase      *SharedDatabaseOptions
 	Env                 map[string]string
+}
+
+type SharedDatabaseOptions struct {
+	Version  string
+	Name     string
+	User     string
+	Password string
 }
 
 type PrepareHetznerConfigOptions struct {
 	PromptEnv bool
 }
 
-func PrepareHetznerConfig(cfg *config.Config, workDir string, options PrepareHetznerConfigOptions) (bool, map[string]string, error) {
+type PrepareHetznerResult struct {
+	Changed                bool
+	EnvValues              map[string]string
+	SharedDatabasePassword string
+}
+
+func PrepareHetznerConfig(cfg *config.Config, workDir string, options PrepareHetznerConfigOptions) (PrepareHetznerResult, error) {
 	p := &linePrompter{
 		in:  bufio.NewReader(os.Stdin),
 		out: os.Stdout,
@@ -57,7 +74,7 @@ func PrepareHetznerConfig(cfg *config.Config, workDir string, options PrepareHet
 	if strings.TrimSpace(cfg.Build.Command) == "" {
 		value, err := p.String("Build command", defaultBuildCommand(cfg.Project.Framework), true)
 		if err != nil {
-			return false, nil, err
+			return PrepareHetznerResult{}, err
 		}
 		cfg.Build.Command = value
 		changed = true
@@ -65,7 +82,7 @@ func PrepareHetznerConfig(cfg *config.Config, workDir string, options PrepareHet
 	if strings.TrimSpace(cfg.Build.Output) == "" {
 		value, err := p.String("Build output directory", defaultBuildOutput(cfg.Project.Framework), true)
 		if err != nil {
-			return false, nil, err
+			return PrepareHetznerResult{}, err
 		}
 		cfg.Build.Output = value
 		changed = true
@@ -73,7 +90,7 @@ func PrepareHetznerConfig(cfg *config.Config, workDir string, options PrepareHet
 	if strings.TrimSpace(cfg.Runtime.Start) == "" {
 		value, err := p.String("Runtime start command", defaultRuntimeStart(cfg.Project.Framework), true)
 		if err != nil {
-			return false, nil, err
+			return PrepareHetznerResult{}, err
 		}
 		cfg.Runtime.Start = value
 		changed = true
@@ -81,7 +98,7 @@ func PrepareHetznerConfig(cfg *config.Config, workDir string, options PrepareHet
 	if cfg.Runtime.Port == 0 {
 		value, err := p.Int("Runtime port", 3000, true)
 		if err != nil {
-			return false, nil, err
+			return PrepareHetznerResult{}, err
 		}
 		cfg.Runtime.Port = value
 		changed = true
@@ -89,7 +106,7 @@ func PrepareHetznerConfig(cfg *config.Config, workDir string, options PrepareHet
 	if strings.TrimSpace(cfg.Runtime.Healthcheck.Path) == "" || strings.TrimSpace(cfg.Runtime.Healthcheck.Path) == "/health" {
 		value, err := p.String("Healthcheck path", "/", true)
 		if err != nil {
-			return false, nil, err
+			return PrepareHetznerResult{}, err
 		}
 		cfg.Runtime.Healthcheck.Path = value
 		changed = true
@@ -106,7 +123,7 @@ func PrepareHetznerConfig(cfg *config.Config, workDir string, options PrepareHet
 	if isPlaceholderHostname(cfg.Routes[0].Hostname) {
 		value, err := p.String("Public hostname", "", true)
 		if err != nil {
-			return false, nil, err
+			return PrepareHetznerResult{}, err
 		}
 		cfg.Routes[0].Hostname = value
 		changed = true
@@ -120,7 +137,7 @@ func PrepareHetznerConfig(cfg *config.Config, workDir string, options PrepareHet
 	if strings.TrimSpace(cfg.Hetzner.Host) == "" {
 		value, err := p.String("Hetzner server IP or hostname", "", true)
 		if err != nil {
-			return false, nil, err
+			return PrepareHetznerResult{}, err
 		}
 		cfg.Hetzner.Host = value
 		changed = true
@@ -128,7 +145,7 @@ func PrepareHetznerConfig(cfg *config.Config, workDir string, options PrepareHet
 	if strings.TrimSpace(cfg.Hetzner.User) == "" {
 		value, err := p.String("SSH user", "root", true)
 		if err != nil {
-			return false, nil, err
+			return PrepareHetznerResult{}, err
 		}
 		cfg.Hetzner.User = value
 		changed = true
@@ -136,7 +153,7 @@ func PrepareHetznerConfig(cfg *config.Config, workDir string, options PrepareHet
 	if cfg.Hetzner.Port == 0 {
 		value, err := p.Int("SSH port", 22, true)
 		if err != nil {
-			return false, nil, err
+			return PrepareHetznerResult{}, err
 		}
 		cfg.Hetzner.Port = value
 		changed = true
@@ -145,7 +162,7 @@ func PrepareHetznerConfig(cfg *config.Config, workDir string, options PrepareHet
 		defaultKey := defaultSSHKeyPath()
 		value, err := p.String("SSH key path (leave blank to use ssh defaults)", defaultKey, false)
 		if err != nil {
-			return false, nil, err
+			return PrepareHetznerResult{}, err
 		}
 		cfg.Hetzner.SSHKeyPath = value
 		changed = true
@@ -156,7 +173,7 @@ func PrepareHetznerConfig(cfg *config.Config, workDir string, options PrepareHet
 		serverPath = effectiveHetznerServerPath(*cfg.Hetzner, cfg.Project.Name)
 		value, err := p.String("Remote server root", serverPath, true)
 		if err != nil {
-			return false, nil, err
+			return PrepareHetznerResult{}, err
 		}
 		cfg.Hetzner.ServerPath = filepath.ToSlash(filepath.Clean(value))
 		changed = true
@@ -165,7 +182,7 @@ func PrepareHetznerConfig(cfg *config.Config, workDir string, options PrepareHet
 	if strings.TrimSpace(cfg.Hetzner.AppPath) == "" {
 		value, err := p.String("Remote app path", defaultHetznerAppPath(cfg.Hetzner.ServerPath, cfg.Project.Name), true)
 		if err != nil {
-			return false, nil, err
+			return PrepareHetznerResult{}, err
 		}
 		cfg.Hetzner.AppPath = filepath.ToSlash(filepath.Clean(value))
 		changed = true
@@ -173,26 +190,44 @@ func PrepareHetznerConfig(cfg *config.Config, workDir string, options PrepareHet
 	if cfg.Hetzner.ServicePort == 0 {
 		value, err := p.Int("Remote loopback service port", cfg.Runtime.Port, true)
 		if err != nil {
-			return false, nil, err
+			return PrepareHetznerResult{}, err
 		}
 		cfg.Hetzner.ServicePort = value
 		changed = true
 	}
 
+	databaseChanged, err := prepareDatabaseConfig(cfg, workDir, p)
+	if err != nil {
+		return PrepareHetznerResult{}, err
+	}
+	if databaseChanged {
+		changed = true
+	}
+
 	var envValues map[string]string
+	sharedDatabasePassword := ""
 	if options.PromptEnv {
 		var envChanged bool
-		var err error
 		envValues, envChanged, err = collectDeployEnvValues(cfg, workDir, p)
 		if err != nil {
-			return false, nil, err
+			return PrepareHetznerResult{}, err
 		}
 		if envChanged {
 			changed = true
 		}
+		if usesSharedDatabase(cfg.Database) {
+			sharedDatabasePassword, err = promptSharedDatabasePassword(p, cfg.Database.Shared.User)
+			if err != nil {
+				return PrepareHetznerResult{}, err
+			}
+		}
 	}
 
-	return changed, envValues, nil
+	return PrepareHetznerResult{
+		Changed:                changed,
+		EnvValues:              envValues,
+		SharedDatabasePassword: sharedDatabasePassword,
+	}, nil
 }
 
 func DeployToHetzner(opts HetznerOptions) error {
@@ -251,6 +286,12 @@ func validateHetznerOptions(opts HetznerOptions) error {
 		return fmt.Errorf("proxy container name is required")
 	case strings.TrimSpace(opts.SiteConfigName) == "":
 		return fmt.Errorf("site config name is required")
+	case opts.SharedDatabase != nil && strings.TrimSpace(opts.SharedDatabase.Version) == "":
+		return fmt.Errorf("database.shared.version is required")
+	case opts.SharedDatabase != nil && strings.TrimSpace(opts.SharedDatabase.Name) == "":
+		return fmt.Errorf("database.shared.name is required")
+	case opts.SharedDatabase != nil && strings.TrimSpace(opts.SharedDatabase.User) == "":
+		return fmt.Errorf("database.shared.user is required")
 	default:
 		return nil
 	}
@@ -320,14 +361,22 @@ func prepareHetznerBundle(opts HetznerOptions) (string, error) {
 
 func ensureRemoteDirectories(opts HetznerOptions) error {
 	proxyRoot := sharedProxyRoot(opts.RemoteServerPath)
-	script := strings.Join([]string{
+	lines := []string{
 		"set -euo pipefail",
 		fmt.Sprintf("mkdir -p %s", shellQuote(opts.RemoteServerPath)),
 		fmt.Sprintf("mkdir -p %s", shellQuote(opts.RemoteAppPath)),
 		fmt.Sprintf("mkdir -p %s", shellQuote(filepath.ToSlash(filepath.Join(proxyRoot, "sites")))),
 		fmt.Sprintf("mkdir -p %s", shellQuote(filepath.ToSlash(filepath.Join(proxyRoot, "data")))),
 		fmt.Sprintf("mkdir -p %s", shellQuote(filepath.ToSlash(filepath.Join(proxyRoot, "config")))),
-	}, "\n")
+	}
+	if opts.SharedDatabase != nil {
+		postgresRoot := sharedPostgresRoot(opts.RemoteServerPath)
+		lines = append(lines,
+			fmt.Sprintf("mkdir -p %s", shellQuote(postgresRoot)),
+			fmt.Sprintf("mkdir -p %s", shellQuote(filepath.ToSlash(filepath.Join(postgresRoot, "data")))),
+		)
+	}
+	script := strings.Join(lines, "\n")
 	return runRemoteScript(opts, script)
 }
 
@@ -360,20 +409,32 @@ func runHetznerDeployScript(opts HetznerOptions) error {
 	proxyDataPath := filepath.ToSlash(filepath.Join(proxyRoot, "data"))
 	proxyConfigPath := filepath.ToSlash(filepath.Join(proxyRoot, "config"))
 	siteConfigPath := filepath.ToSlash(filepath.Join(proxySitesDir, opts.SiteConfigName))
+	runtimeEnvPath := filepath.ToSlash(filepath.Join(opts.RemoteAppPath, "app.runtime.env"))
 
-	script := strings.Join([]string{
+	lines := []string{
 		"set -euo pipefail",
 		fmt.Sprintf("cd %s", shellQuote(opts.RemoteAppPath)),
 		"if ! command -v docker >/dev/null 2>&1; then",
 		"  echo 'docker is required on the remote host' >&2",
 		"  exit 1",
 		"fi",
+		fmt.Sprintf("docker network inspect %s >/dev/null 2>&1 || docker network create %s >/dev/null",
+			shellQuote(sharedDockerNetwork),
+			shellQuote(sharedDockerNetwork)),
 		fmt.Sprintf("cat > %s <<'EOF'\n%sEOF", shellQuote(rootCaddyPath), renderRootCaddyfile()),
 		fmt.Sprintf("install -m 0644 site.caddy %s", shellQuote(siteConfigPath)),
+		fmt.Sprintf("cp app.env %s", shellQuote(runtimeEnvPath)),
+	}
+
+	if opts.SharedDatabase != nil {
+		lines = append(lines, renderSharedDatabaseSetup(opts, runtimeEnvPath)...)
+	}
+
+	lines = append(lines,
 		fmt.Sprintf("docker build -t %s -f Dockerfile .", shellQuote(opts.ImageTag)),
 		fmt.Sprintf("docker rm -f %s >/dev/null 2>&1 || true", shellQuote(opts.AppContainerName)),
-		fmt.Sprintf("docker run -d --restart unless-stopped --env-file app.env --name %s -p 127.0.0.1:%d:%d %s >/dev/null",
-			shellQuote(opts.AppContainerName), opts.ServicePort, opts.ContainerPort, shellQuote(opts.ImageTag)),
+		fmt.Sprintf("docker run -d --restart unless-stopped --network %s --env-file %s --name %s -p 127.0.0.1:%d:%d %s >/dev/null",
+			shellQuote(sharedDockerNetwork), shellQuote(runtimeEnvPath), shellQuote(opts.AppContainerName), opts.ServicePort, opts.ContainerPort, shellQuote(opts.ImageTag)),
 		"attempt=0",
 		fmt.Sprintf("until docker run --rm --network host curlimages/curl:8.12.1 -fsS %s >/dev/null 2>&1; do",
 			shellQuote("http://127.0.0.1:"+strconv.Itoa(opts.ServicePort)+healthPath)),
@@ -392,7 +453,8 @@ func runHetznerDeployScript(opts HetznerOptions) error {
 			shellQuote(proxySitesDir),
 			shellQuote(proxyDataPath),
 			shellQuote(proxyConfigPath)),
-	}, "\n")
+	)
+	script := strings.Join(lines, "\n")
 
 	return runRemoteScript(opts, script)
 }
@@ -406,6 +468,96 @@ func runRemoteScript(opts HetznerOptions, script string) error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
+}
+
+func renderSharedDatabaseSetup(opts HetznerOptions, runtimeEnvPath string) []string {
+	postgresRoot := sharedPostgresRoot(opts.RemoteServerPath)
+	postgresDataPath := filepath.ToSlash(filepath.Join(postgresRoot, "data"))
+	postgresEnvPath := filepath.ToSlash(filepath.Join(postgresRoot, "postgres.env"))
+	appDBEnvPath := filepath.ToSlash(filepath.Join(opts.RemoteAppPath, ".database.env"))
+	providedPassword := strings.TrimSpace(opts.SharedDatabase.Password)
+	passwordAssignment := "APP_DB_PASSWORD=''"
+	if providedPassword != "" {
+		passwordAssignment = "APP_DB_PASSWORD=" + shellQuote(providedPassword)
+	}
+
+	sqlScript := renderSharedDatabaseSQL(*opts.SharedDatabase)
+
+	return []string{
+		fmt.Sprintf("mkdir -p %s", shellQuote(postgresRoot)),
+		fmt.Sprintf("mkdir -p %s", shellQuote(postgresDataPath)),
+		fmt.Sprintf("if [ ! -f %s ]; then", shellQuote(postgresEnvPath)),
+		"  POSTGRES_PASSWORD=$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 40)",
+		fmt.Sprintf("  umask 077 && printf 'POSTGRES_PASSWORD=%%s\\n' \"$POSTGRES_PASSWORD\" > %s", shellQuote(postgresEnvPath)),
+		"fi",
+		fmt.Sprintf("docker pull %s >/dev/null", shellQuote(sharedPostgresImage(*opts.SharedDatabase))),
+		fmt.Sprintf("if ! docker ps -a --format '{{.Names}}' | grep -Fx -- %s >/dev/null 2>&1; then", shellQuote(sharedPostgresContainer)),
+		fmt.Sprintf("  docker run -d --restart unless-stopped --network %s -p 127.0.0.1:5432:5432 --name %s --env-file %s -v %s:/var/lib/postgresql/data %s >/dev/null",
+			shellQuote(sharedDockerNetwork),
+			shellQuote(sharedPostgresContainer),
+			shellQuote(postgresEnvPath),
+			shellQuote(postgresDataPath),
+			shellQuote(sharedPostgresImage(*opts.SharedDatabase))),
+		"else",
+		fmt.Sprintf("  docker start %s >/dev/null 2>&1 || true", shellQuote(sharedPostgresContainer)),
+		"fi",
+		fmt.Sprintf("docker network connect %s %s >/dev/null 2>&1 || true",
+			shellQuote(sharedDockerNetwork),
+			shellQuote(sharedPostgresContainer)),
+		"db_attempt=0",
+		fmt.Sprintf("until docker exec %s pg_isready -U postgres >/dev/null 2>&1; do", shellQuote(sharedPostgresContainer)),
+		"  db_attempt=$((db_attempt + 1))",
+		"  if [ \"$db_attempt\" -ge 30 ]; then",
+		fmt.Sprintf("    docker logs %s || true", shellQuote(sharedPostgresContainer)),
+		"    exit 1",
+		"  fi",
+		"  sleep 2",
+		"done",
+		passwordAssignment,
+		fmt.Sprintf("if [ -f %s ]; then", shellQuote(appDBEnvPath)),
+		fmt.Sprintf("  . %s", shellQuote(appDBEnvPath)),
+		"  if [ -z \"$APP_DB_PASSWORD\" ] && [ -n \"${DB_PASSWORD:-}\" ]; then APP_DB_PASSWORD=\"$DB_PASSWORD\"; fi",
+		"fi",
+		"if [ -z \"$APP_DB_PASSWORD\" ]; then APP_DB_PASSWORD=$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 32); fi",
+		fmt.Sprintf("umask 077 && cat > %s <<EOF\nDB_NAME=%s\nDB_USER=%s\nDB_PASSWORD=$APP_DB_PASSWORD\nEOF",
+			shellQuote(appDBEnvPath),
+			opts.SharedDatabase.Name,
+			opts.SharedDatabase.User),
+		fmt.Sprintf("chmod 600 %s", shellQuote(appDBEnvPath)),
+		fmt.Sprintf("docker exec --user postgres %s psql -v ON_ERROR_STOP=1 -v db_password=\"$APP_DB_PASSWORD\" -d postgres <<'SQL'\n%sSQL",
+			shellQuote(sharedPostgresContainer),
+			sqlScript),
+		fmt.Sprintf("if grep -q '^DATABASE_URL=' %s; then sed -i '/^DATABASE_URL=/d' %s; fi",
+			shellQuote(runtimeEnvPath),
+			shellQuote(runtimeEnvPath)),
+		fmt.Sprintf("printf 'DATABASE_URL=postgresql://%s:%%s@%s:5432/%s?sslmode=disable\\n' \"$APP_DB_PASSWORD\" >> %s",
+			opts.SharedDatabase.User,
+			sharedPostgresContainer,
+			opts.SharedDatabase.Name,
+			shellQuote(runtimeEnvPath)),
+	}
+}
+
+func renderSharedDatabaseSQL(opts SharedDatabaseOptions) string {
+	dbNameLiteral := sqlQuoteLiteral(opts.Name)
+	dbUserLiteral := sqlQuoteLiteral(opts.User)
+	return strings.Join([]string{
+		fmt.Sprintf("SELECT set_config('eu_deploy.app_password', %s, false);", ":'db_password'"),
+		"DO $$",
+		"BEGIN",
+		fmt.Sprintf("  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = %s) THEN", dbUserLiteral),
+		fmt.Sprintf("    EXECUTE 'CREATE ROLE %s LOGIN PASSWORD ' || quote_literal(current_setting('eu_deploy.app_password'));", sqlQuoteIdentifier(opts.User)),
+		"  ELSE",
+		fmt.Sprintf("    EXECUTE 'ALTER ROLE %s WITH LOGIN PASSWORD ' || quote_literal(current_setting('eu_deploy.app_password'));", sqlQuoteIdentifier(opts.User)),
+		"  END IF;",
+		"END",
+		"$$;",
+		fmt.Sprintf("SELECT 'CREATE DATABASE %s OWNER %s' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = %s)\\gexec",
+			sqlQuoteIdentifier(opts.Name),
+			sqlQuoteIdentifier(opts.User),
+			dbNameLiteral),
+		fmt.Sprintf("GRANT ALL PRIVILEGES ON DATABASE %s TO %s;", sqlQuoteIdentifier(opts.Name), sqlQuoteIdentifier(opts.User)),
+	}, "\n")
 }
 
 func renderSiteCaddyfile(hostname, routePath string, servicePort int) string {
@@ -502,6 +654,9 @@ func collectDeployEnvValues(cfg *config.Config, workDir string, p *linePrompter)
 	}
 
 	for _, key := range sortedKeys(cfg.Env.Secret) {
+		if generatedEnvKey(cfg, key) {
+			continue
+		}
 		value := strings.TrimSpace(cfg.Env.Secret[key])
 		if value == "" {
 			var err error
@@ -516,6 +671,125 @@ func collectDeployEnvValues(cfg *config.Config, workDir string, p *linePrompter)
 	}
 
 	return values, changed, nil
+}
+
+func prepareDatabaseConfig(cfg *config.Config, workDir string, p *linePrompter) (bool, error) {
+	changed := false
+
+	envTemplateKeys, err := parseEnvTemplateKeys(filepath.Join(workDir, ".env.example"))
+	if err != nil && !os.IsNotExist(err) {
+		return false, err
+	}
+	needsDatabase := hasEnvKey(envTemplateKeys, "DATABASE_URL")
+	if _, ok := cfg.Env.Secret["DATABASE_URL"]; ok {
+		needsDatabase = true
+	}
+	if _, ok := cfg.Env.Public["DATABASE_URL"]; ok {
+		needsDatabase = true
+	}
+
+	if cfg.Database == nil && needsDatabase {
+		useShared, err := p.Bool("Found DATABASE_URL. Use shared PostgreSQL on this server", false)
+		if err != nil {
+			return false, err
+		}
+		if useShared {
+			cfg.Database = &config.DatabaseSpec{
+				Mode:   "shared",
+				Shared: &config.SharedDatabaseSpec{},
+			}
+			changed = true
+		}
+	}
+
+	if !usesSharedDatabase(cfg.Database) {
+		return changed, nil
+	}
+
+	if cfg.Database.Shared == nil {
+		cfg.Database.Shared = &config.SharedDatabaseSpec{}
+		changed = true
+	}
+	if strings.TrimSpace(cfg.Database.Shared.Engine) == "" {
+		cfg.Database.Shared.Engine = "postgres"
+		changed = true
+	}
+	if strings.TrimSpace(cfg.Database.Shared.Version) == "" {
+		value, err := p.String("Shared PostgreSQL version", defaultSharedDatabaseVersion(), true)
+		if err != nil {
+			return false, err
+		}
+		cfg.Database.Shared.Version = value
+		changed = true
+	}
+	if strings.TrimSpace(cfg.Database.Shared.Name) == "" {
+		value, err := p.String("Shared PostgreSQL database name", defaultSharedDatabaseName(cfg.Project.Name), true)
+		if err != nil {
+			return false, err
+		}
+		cfg.Database.Shared.Name = sanitizePostgresIdentifier(value)
+		changed = true
+	}
+	if strings.TrimSpace(cfg.Database.Shared.User) == "" {
+		value, err := p.String("Shared PostgreSQL database user", defaultSharedDatabaseUser(cfg.Project.Name), true)
+		if err != nil {
+			return false, err
+		}
+		cfg.Database.Shared.User = sanitizePostgresIdentifier(value)
+		changed = true
+	}
+
+	return changed, nil
+}
+
+func promptSharedDatabasePassword(p *linePrompter, user string) (string, error) {
+	for {
+		value, err := p.String(fmt.Sprintf("Shared PostgreSQL password for %s (leave blank to generate or reuse on the server)", user), "", false)
+		if err != nil {
+			return "", err
+		}
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return "", nil
+		}
+		if isURLSafeSecret(value) {
+			return value, nil
+		}
+		if _, err := fmt.Fprintln(p.out, "Use only letters, numbers, hyphen, or underscore for a DB password."); err != nil {
+			return "", err
+		}
+	}
+}
+
+func usesSharedDatabase(spec *config.DatabaseSpec) bool {
+	return spec != nil && strings.TrimSpace(spec.Mode) == "shared"
+}
+
+func generatedEnvKey(cfg *config.Config, key string) bool {
+	return usesSharedDatabase(cfg.Database) && key == "DATABASE_URL"
+}
+
+func hasEnvKey(keys []string, key string) bool {
+	for _, item := range keys {
+		if item == key {
+			return true
+		}
+	}
+	return false
+}
+
+func isURLSafeSecret(value string) bool {
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case r == '-' || r == '_':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func parseEnvTemplateKeys(path string) ([]string, error) {
@@ -656,6 +930,14 @@ func SharedProxyContainerName() string {
 	return sharedProxyContainer
 }
 
+func SharedDockerNetworkName() string {
+	return sharedDockerNetwork
+}
+
+func SharedPostgresContainerName() string {
+	return sharedPostgresContainer
+}
+
 func BuildHetznerSiteConfigName(hostname string) string {
 	name := strings.TrimSpace(hostname)
 	if name == "" {
@@ -672,6 +954,77 @@ func BuildHetznerSiteConfigName(hostname string) string {
 
 func sharedProxyRoot(serverPath string) string {
 	return filepath.ToSlash(filepath.Join(serverPath, sharedProxyDirName))
+}
+
+func sharedPostgresRoot(serverPath string) string {
+	return filepath.ToSlash(filepath.Join(serverPath, sharedPostgresDirName))
+}
+
+func sharedPostgresImage(opts SharedDatabaseOptions) string {
+	version := strings.TrimSpace(opts.Version)
+	if version == "" {
+		version = defaultSharedDatabaseVersion()
+	}
+	return "postgres:" + version
+}
+
+func defaultSharedDatabaseVersion() string {
+	return "16"
+}
+
+func defaultSharedDatabaseName(projectName string) string {
+	return sanitizePostgresIdentifier(projectName)
+}
+
+func defaultSharedDatabaseUser(projectName string) string {
+	return sanitizePostgresIdentifier(projectName)
+}
+
+func sanitizePostgresIdentifier(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return "app"
+	}
+
+	var b strings.Builder
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r)
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+
+	sanitized := b.String()
+	sanitized = strings.Trim(sanitized, "_")
+	for strings.Contains(sanitized, "__") {
+		sanitized = strings.ReplaceAll(sanitized, "__", "_")
+	}
+	if sanitized == "" {
+		sanitized = "app"
+	}
+	if sanitized[0] >= '0' && sanitized[0] <= '9' {
+		sanitized = "app_" + sanitized
+	}
+	if len(sanitized) > 63 {
+		sanitized = sanitized[:63]
+		sanitized = strings.TrimRight(sanitized, "_")
+	}
+	if sanitized == "" {
+		sanitized = "app"
+	}
+	return sanitized
+}
+
+func sqlQuoteLiteral(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "''") + "'"
+}
+
+func sqlQuoteIdentifier(value string) string {
+	return `"` + strings.ReplaceAll(value, `"`, `""`) + `"`
 }
 
 func sortedKeys(m map[string]string) []string {
