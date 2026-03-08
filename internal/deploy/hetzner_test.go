@@ -103,6 +103,33 @@ func TestRenderHetznerBootstrapScript(t *testing.T) {
 	}
 }
 
+func TestRenderHetznerDeployScriptRunsPostDeployCommand(t *testing.T) {
+	got := renderHetznerDeployScript(HetznerOptions{
+		RemoteServerPath:  "/opt/eu-deploy",
+		RemoteAppPath:     "/opt/eu-deploy/apps/massage",
+		RemoteHost:        "example.com",
+		RemoteUser:        "root",
+		RemotePort:        22,
+		RuntimeStart:      "npm run start",
+		ContainerPort:     3000,
+		ServicePort:       3001,
+		ImageTag:          "eu-deploy-massage:remote",
+		AppContainerName:  "eu-massage-app",
+		ProxyContainerName:"eu-shared-caddy",
+		Hostname:          "massage.example.com",
+		RoutePath:         "/",
+		HealthcheckPath:   "/",
+		SiteConfigName:    "massage.example.com.caddy",
+		PostDeploy: &PostDeployOptions{
+			Command: "node scripts/setup-db.js",
+		},
+	})
+
+	if !strings.Contains(got, "docker exec 'eu-massage-app' bash -lc 'node scripts/setup-db.js'") {
+		t.Fatalf("deploy script should run the configured post-deploy command:\n%s", got)
+	}
+}
+
 func TestInterpretSharedProxyCheck(t *testing.T) {
 	if got := interpretSharedProxyCheck("proxy"); got.Status != PreflightOK {
 		t.Fatalf("expected OK for proxy status, got %s", got.Status)

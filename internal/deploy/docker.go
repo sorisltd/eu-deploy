@@ -13,6 +13,7 @@ import (
 type DockerOptions struct {
 	WorkDir             string
 	ArtifactPath        string
+	PostDeployArchive   string
 	RuntimeStart        string
 	ContainerPort       int
 	HostPort            int
@@ -70,6 +71,15 @@ func BuildDockerImage(opts DockerOptions) error {
 	}
 	if info, err := os.Stat(artifactPath); err != nil || info.IsDir() {
 		return fmt.Errorf("build artifact not found: %s", opts.ArtifactPath)
+	}
+	if strings.TrimSpace(opts.PostDeployArchive) != "" {
+		postDeployArchive := opts.PostDeployArchive
+		if !filepath.IsAbs(postDeployArchive) {
+			postDeployArchive = filepath.Join(opts.WorkDir, postDeployArchive)
+		}
+		if info, err := os.Stat(postDeployArchive); err != nil || info.IsDir() {
+			return fmt.Errorf("post-deploy archive not found: %s", opts.PostDeployArchive)
+		}
 	}
 
 	if opts.InstallDependencies {
@@ -135,16 +145,30 @@ func dockerfileContents(opts DockerOptions) string {
 	}
 	artifactRel = filepath.ToSlash(artifactRel)
 
-	return strings.Join([]string{
+	postDeployRel := opts.PostDeployArchive
+	if filepath.IsAbs(postDeployRel) {
+		if rel, err := filepath.Rel(opts.WorkDir, postDeployRel); err == nil {
+			postDeployRel = rel
+		}
+	}
+	postDeployRel = filepath.ToSlash(postDeployRel)
+
+	lines := []string{
 		"FROM node:20-slim",
 		"WORKDIR /app",
 		"ENV NODE_ENV=production",
 		dockerfileInstallStep(opts.InstallDependencies),
 		fmt.Sprintf("ADD %s /app/", artifactRel),
+	}
+	if strings.TrimSpace(postDeployRel) != "" {
+		lines = append(lines, fmt.Sprintf("ADD %s /app/", postDeployRel))
+	}
+	lines = append(lines,
 		fmt.Sprintf("EXPOSE %d", opts.ContainerPort),
 		fmt.Sprintf("CMD [\"bash\",\"-lc\",%s]", strconv.Quote(opts.RuntimeStart)),
 		"",
-	}, "\n")
+	)
+	return strings.Join(lines, "\n")
 }
 
 func dockerfileInstallStep(installDependencies bool) string {

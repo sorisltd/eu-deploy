@@ -462,6 +462,12 @@ func buildHetznerOptions(cfg config.Config, wd, safeProject, sharedDatabasePassw
 			Password: sharedDatabasePassword,
 		}
 	}
+	if cfg.Deploy.PostDeploy != nil && strings.TrimSpace(cfg.Deploy.PostDeploy.Command) != "" {
+		opts.PostDeploy = &deploy.PostDeployOptions{
+			Command: cfg.Deploy.PostDeploy.Command,
+			Include: append([]string(nil), cfg.Deploy.PostDeploy.Include...),
+		}
+	}
 
 	return opts
 }

@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/sorisltd/eu-deploy/internal/build"
 	"github.com/sorisltd/eu-deploy/internal/config"
 )
 
@@ -43,6 +44,7 @@ type HetznerOptions struct {
 	HealthcheckPath     string
 	SiteConfigName      string
 	SharedDatabase      *SharedDatabaseOptions
+	PostDeploy          *PostDeployOptions
 	Env                 map[string]string
 }
 
@@ -51,6 +53,11 @@ type SharedDatabaseOptions struct {
 	Name     string
 	User     string
 	Password string
+}
+
+type PostDeployOptions struct {
+	Command string
+	Include []string
 }
 
 type PrepareHetznerConfigOptions struct {
@@ -324,6 +331,14 @@ func prepareHetznerBundle(opts HetznerOptions) (string, error) {
 		ContainerPort:       opts.ContainerPort,
 		InstallDependencies: opts.InstallDependencies,
 	}
+	if opts.PostDeploy != nil && len(opts.PostDeploy.Include) > 0 {
+		postDeployArchivePath := filepath.Join(bundleDir, "postdeploy.tar.gz")
+		if err := build.PackagePaths(opts.WorkDir, opts.PostDeploy.Include, postDeployArchivePath); err != nil {
+			os.RemoveAll(bundleDir)
+			return "", err
+		}
+		dockerfileOpts.PostDeployArchive = "postdeploy.tar.gz"
+	}
 	if err := os.WriteFile(filepath.Join(bundleDir, "Dockerfile"), []byte(dockerfileContents(dockerfileOpts)), 0o644); err != nil {
 		os.RemoveAll(bundleDir)
 		return "", err
@@ -402,6 +417,11 @@ func uploadHetznerBundle(opts HetznerOptions, bundleDir string) error {
 }
 
 func runHetznerDeployScript(opts HetznerOptions) error {
+	script := renderHetznerDeployScript(opts)
+	return runRemoteScript(opts, script)
+}
+
+func renderHetznerDeployScript(opts HetznerOptions) string {
 	healthPath := normalizedHealthcheckPath(opts.HealthcheckPath)
 	proxyRoot := sharedProxyRoot(opts.RemoteServerPath)
 	proxySitesDir := filepath.ToSlash(filepath.Join(proxyRoot, "sites"))
@@ -435,6 +455,18 @@ func runHetznerDeployScript(opts HetznerOptions) error {
 		fmt.Sprintf("docker rm -f %s >/dev/null 2>&1 || true", shellQuote(opts.AppContainerName)),
 		fmt.Sprintf("docker run -d --restart unless-stopped --network %s --env-file %s --name %s -p 127.0.0.1:%d:%d %s >/dev/null",
 			shellQuote(sharedDockerNetwork), shellQuote(runtimeEnvPath), shellQuote(opts.AppContainerName), opts.ServicePort, opts.ContainerPort, shellQuote(opts.ImageTag)),
+	)
+	if opts.PostDeploy != nil && strings.TrimSpace(opts.PostDeploy.Command) != "" {
+		lines = append(lines,
+			fmt.Sprintf("if ! docker exec %s bash -lc %s; then",
+				shellQuote(opts.AppContainerName),
+				shellQuote(opts.PostDeploy.Command)),
+			fmt.Sprintf("  docker logs %s || true", shellQuote(opts.AppContainerName)),
+			"  exit 1",
+			"fi",
+		)
+	}
+	lines = append(lines,
 		"attempt=0",
 		fmt.Sprintf("until docker run --rm --network host curlimages/curl:8.12.1 -fsS %s >/dev/null 2>&1; do",
 			shellQuote("http://127.0.0.1:"+strconv.Itoa(opts.ServicePort)+healthPath)),
@@ -454,9 +486,7 @@ func runHetznerDeployScript(opts HetznerOptions) error {
 			shellQuote(proxyDataPath),
 			shellQuote(proxyConfigPath)),
 	)
-	script := strings.Join(lines, "\n")
-
-	return runRemoteScript(opts, script)
+	return strings.Join(lines, "\n")
 }
 
 func runRemoteScript(opts HetznerOptions, script string) error {
@@ -487,7 +517,8 @@ func renderSharedDatabaseSetup(opts HetznerOptions, runtimeEnvPath string) []str
 		fmt.Sprintf("mkdir -p %s", shellQuote(postgresRoot)),
 		fmt.Sprintf("mkdir -p %s", shellQuote(postgresDataPath)),
 		fmt.Sprintf("if [ ! -f %s ]; then", shellQuote(postgresEnvPath)),
-		"  POSTGRES_PASSWORD=$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 40)",
+		"  POSTGRES_PASSWORD=$(od -An -tx1 -N24 /dev/urandom | tr -d ' \\n')",
+		"  POSTGRES_PASSWORD=${POSTGRES_PASSWORD:0:40}",
 		fmt.Sprintf("  umask 077 && printf 'POSTGRES_PASSWORD=%%s\\n' \"$POSTGRES_PASSWORD\" > %s", shellQuote(postgresEnvPath)),
 		"fi",
 		fmt.Sprintf("docker pull %s >/dev/null", shellQuote(sharedPostgresImage(*opts.SharedDatabase))),
@@ -518,13 +549,13 @@ func renderSharedDatabaseSetup(opts HetznerOptions, runtimeEnvPath string) []str
 		fmt.Sprintf("  . %s", shellQuote(appDBEnvPath)),
 		"  if [ -z \"$APP_DB_PASSWORD\" ] && [ -n \"${DB_PASSWORD:-}\" ]; then APP_DB_PASSWORD=\"$DB_PASSWORD\"; fi",
 		"fi",
-		"if [ -z \"$APP_DB_PASSWORD\" ]; then APP_DB_PASSWORD=$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 32); fi",
+		"if [ -z \"$APP_DB_PASSWORD\" ]; then APP_DB_PASSWORD=$(od -An -tx1 -N20 /dev/urandom | tr -d ' \\n'); APP_DB_PASSWORD=${APP_DB_PASSWORD:0:32}; fi",
 		fmt.Sprintf("umask 077 && cat > %s <<EOF\nDB_NAME=%s\nDB_USER=%s\nDB_PASSWORD=$APP_DB_PASSWORD\nEOF",
 			shellQuote(appDBEnvPath),
 			opts.SharedDatabase.Name,
 			opts.SharedDatabase.User),
 		fmt.Sprintf("chmod 600 %s", shellQuote(appDBEnvPath)),
-		fmt.Sprintf("docker exec --user postgres %s psql -v ON_ERROR_STOP=1 -v db_password=\"$APP_DB_PASSWORD\" -d postgres <<'SQL'\n%sSQL",
+		fmt.Sprintf("docker exec -i --user postgres %s psql -v ON_ERROR_STOP=1 -v db_password=\"$APP_DB_PASSWORD\" -d postgres <<'SQL'\n%s\nSQL",
 			shellQuote(sharedPostgresContainer),
 			sqlScript),
 		fmt.Sprintf("if grep -q '^DATABASE_URL=' %s; then sed -i '/^DATABASE_URL=/d' %s; fi",

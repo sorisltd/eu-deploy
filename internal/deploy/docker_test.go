@@ -54,3 +54,20 @@ func TestDockerfileContentsSkipsPackageInstallWhenNotNeeded(t *testing.T) {
 		t.Fatalf("dockerfile should not install dependencies when install is skipped:\n%s", dockerfile)
 	}
 }
+
+func TestDockerfileContentsAddsPostDeployArchive(t *testing.T) {
+	workDir := filepath.Join(string(filepath.Separator), "tmp", "demo")
+	opts := DockerOptions{
+		WorkDir:           workDir,
+		ArtifactPath:      filepath.Join(workDir, ".eudeploy", "demo.tar.gz"),
+		PostDeployArchive: filepath.Join(workDir, ".eudeploy", "postdeploy.tar.gz"),
+		RuntimeStart:      "npm run start",
+		ContainerPort:     3000,
+	}
+
+	dockerfile := dockerfileContents(opts)
+
+	if !strings.Contains(dockerfile, "ADD .eudeploy/postdeploy.tar.gz /app/") {
+		t.Fatalf("dockerfile should add the post-deploy archive when configured:\n%s", dockerfile)
+	}
+}

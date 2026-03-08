@@ -10,6 +10,7 @@ type Config struct {
 	Version  int           `yaml:"version"`
 	Project  ProjectSpec   `yaml:"project"`
 	Build    BuildSpec     `yaml:"build"`
+	Deploy   DeploySpec    `yaml:"deploy,omitempty"`
 	Runtime  RuntimeSpec   `yaml:"runtime"`
 	Routes   []RouteSpec   `yaml:"routes"`
 	Env      EnvSpec       `yaml:"env,omitempty"`
@@ -26,6 +27,15 @@ type ProjectSpec struct {
 type BuildSpec struct {
 	Command string `yaml:"command"`
 	Output  string `yaml:"output"`
+}
+
+type DeploySpec struct {
+	PostDeploy *DeployHookSpec `yaml:"post_deploy,omitempty"`
+}
+
+type DeployHookSpec struct {
+	Command string   `yaml:"command,omitempty"`
+	Include []string `yaml:"include,omitempty"`
 }
 
 type HealthcheckSpec struct {

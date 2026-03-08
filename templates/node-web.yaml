@@ -6,6 +6,13 @@ project:
 build:
   command: npm run build
   output: dist
+deploy:
+  # Optional: run a command inside the app container after it starts.
+  # Useful for migrations or one-time setup scripts.
+  # post_deploy:
+  #   command: node scripts/setup-db.js
+  #   include:
+  #     - scripts/setup-db.js
 runtime:
   type: web
   start: npm run start
