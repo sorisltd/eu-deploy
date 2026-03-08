@@ -17,6 +17,8 @@ type Config struct {
 	Previews PreviewSpec   `yaml:"previews,omitempty"`
 	Database *DatabaseSpec `yaml:"database,omitempty"`
 	Hetzner  *HetznerSpec  `yaml:"hetzner,omitempty"`
+	Scaleway *ScalewaySpec `yaml:"scaleway,omitempty"`
+	OVH      *OVHSpec      `yaml:"ovh,omitempty"`
 }
 
 type ProjectSpec struct {
@@ -30,6 +32,7 @@ type BuildSpec struct {
 }
 
 type DeploySpec struct {
+	Provider   string          `yaml:"provider,omitempty"`
 	PostDeploy *DeployHookSpec `yaml:"post_deploy,omitempty"`
 }
 
@@ -86,6 +89,18 @@ type SharedDatabaseSpec struct {
 }
 
 type HetznerSpec struct {
+	RemoteProviderSpec `yaml:",inline"`
+}
+
+type ScalewaySpec struct {
+	RemoteProviderSpec `yaml:",inline"`
+}
+
+type OVHSpec struct {
+	RemoteProviderSpec `yaml:",inline"`
+}
+
+type RemoteProviderSpec struct {
 	Host        string `yaml:"host"`
 	User        string `yaml:"user"`
 	Port        int    `yaml:"port,omitempty"`

@@ -24,6 +24,10 @@ type PreflightResult struct {
 }
 
 func PreflightHetzner(opts HetznerOptions) ([]PreflightResult, error) {
+	return PreflightRemote(opts)
+}
+
+func PreflightRemote(opts RemoteOptions) ([]PreflightResult, error) {
 	results := []PreflightResult{}
 
 	results = append(results, executableCheck("ssh")...)
@@ -75,7 +79,7 @@ func PreflightHetzner(opts HetznerOptions) ([]PreflightResult, error) {
 		})
 	}
 
-	sshOut, err := runRemoteCommandCapture(opts, true, "printf connected")
+	sshOut, err := runRemoteCommandCapture(opts, true, "printf '%s' connected")
 	if err != nil {
 		results = append(results, PreflightResult{
 			Name:   "SSH connectivity",
@@ -203,7 +207,7 @@ func remoteBooleanCheck(opts HetznerOptions, name, command, okDetail, failDetail
 
 func runRemoteCommandCapture(opts HetznerOptions, batchMode bool, command string) (string, error) {
 	args := buildSSHArgs(opts, batchMode)
-	args = append(args, fmt.Sprintf("%s@%s", opts.RemoteUser, opts.RemoteHost), "bash", "-lc", command)
+	args = append(args, fmt.Sprintf("%s@%s", opts.RemoteUser, opts.RemoteHost), "bash -lc "+shellQuote(command))
 
 	cmd := exec.Command("ssh", args...)
 	out, err := cmd.CombinedOutput()

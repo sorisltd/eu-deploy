@@ -10,6 +10,7 @@ import (
 )
 
 type HetznerBootstrapOptions struct {
+	Provider         RemoteTarget
 	RemoteHost       string
 	RemoteUser       string
 	RemotePort       int
@@ -22,6 +23,10 @@ type HetznerBootstrapOptions struct {
 }
 
 func PromptHetznerBootstrapOptions(cfg config.Config) (HetznerBootstrapOptions, error) {
+	return PromptRemoteBootstrapOptions(cfg, RemoteTargetHetzner)
+}
+
+func PromptRemoteBootstrapOptions(cfg config.Config, target RemoteTarget) (HetznerBootstrapOptions, error) {
 	p := &linePrompter{
 		in:  bufio.NewReader(os.Stdin),
 		out: os.Stdout,
@@ -51,13 +56,19 @@ func PromptHetznerBootstrapOptions(cfg config.Config) (HetznerBootstrapOptions, 
 		}
 	}
 
+	spec, ok := RemoteProviderSpecForTarget(cfg, target)
+	if !ok || spec == nil {
+		return HetznerBootstrapOptions{}, fmt.Errorf("%s config is missing", target)
+	}
+
 	return HetznerBootstrapOptions{
-		RemoteHost:       cfg.Hetzner.Host,
-		RemoteUser:       cfg.Hetzner.User,
-		RemotePort:       cfg.Hetzner.Port,
-		SSHKeyPath:       cfg.Hetzner.SSHKeyPath,
-		RemoteServerPath: effectiveHetznerServerPath(*cfg.Hetzner, ""),
-		RemoteAppPath:    cfg.Hetzner.AppPath,
+		Provider:         target,
+		RemoteHost:       spec.Host,
+		RemoteUser:       spec.User,
+		RemotePort:       spec.Port,
+		SSHKeyPath:       spec.SSHKeyPath,
+		RemoteServerPath: effectiveRemoteServerPath(*spec, ""),
+		RemoteAppPath:    spec.AppPath,
 		InstallUFW:       installUFW,
 		InstallFail2ban:  installFail2ban,
 		SharedDatabase:   sharedDatabase,
@@ -65,24 +76,30 @@ func PromptHetznerBootstrapOptions(cfg config.Config) (HetznerBootstrapOptions, 
 }
 
 func BootstrapHetzner(opts HetznerBootstrapOptions) error {
+	return BootstrapRemote(opts)
+}
+
+func BootstrapRemote(opts HetznerBootstrapOptions) error {
+	prefix := providerConfigFieldPrefix(opts.Provider)
 	if strings.TrimSpace(opts.RemoteHost) == "" {
-		return fmt.Errorf("hetzner.host is required")
+		return fmt.Errorf("%s.host is required", prefix)
 	}
 	if strings.TrimSpace(opts.RemoteUser) == "" {
-		return fmt.Errorf("hetzner.user is required")
+		return fmt.Errorf("%s.user is required", prefix)
 	}
 	if opts.RemotePort <= 0 {
-		return fmt.Errorf("hetzner.port is required")
+		return fmt.Errorf("%s.port is required", prefix)
 	}
 	if strings.TrimSpace(opts.RemoteServerPath) == "" {
-		return fmt.Errorf("hetzner.server_path is required")
+		return fmt.Errorf("%s.server_path is required", prefix)
 	}
 	if strings.TrimSpace(opts.RemoteAppPath) == "" {
-		return fmt.Errorf("hetzner.app_path is required")
+		return fmt.Errorf("%s.app_path is required", prefix)
 	}
 
 	script := renderHetznerBootstrapScript(opts)
-	return runRemoteScript(HetznerOptions{
+	return runRemoteScript(RemoteOptions{
+		Provider:   opts.Provider,
 		RemoteHost: opts.RemoteHost,
 		RemoteUser: opts.RemoteUser,
 		RemotePort: opts.RemotePort,

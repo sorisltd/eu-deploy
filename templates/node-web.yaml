@@ -7,6 +7,9 @@ build:
   command: npm run build
   output: dist
 deploy:
+  # Optional: set the default provider so `eu deploy`/`eu preflight`/`eu bootstrap`
+  # do not need `--target` every time.
+  provider: hetzner
   # Optional: run a command inside the app container after it starts.
   # Useful for migrations or one-time setup scripts.
   # post_deploy:
@@ -29,7 +32,7 @@ previews:
   enabled: false
   hostname_template: pr-{{pr}}.my-app.eu-deploy.dev
   ttl_hours: 72
-# Optional: shared PostgreSQL on the Hetzner server for small sites.
+# Optional: shared PostgreSQL on the remote server for small sites.
 # database:
 #   mode: shared
 #   shared:
@@ -37,6 +40,7 @@ previews:
 #     version: "16"
 #     name: my_app
 #     user: my_app
+# Uncomment exactly one provider section to start.
 hetzner:
   host: ""
   user: root
@@ -45,3 +49,19 @@ hetzner:
   server_path: /opt/eu-deploy
   app_path: /opt/eu-deploy/apps/my-app
   service_port: 3000
+# scaleway:
+#   host: ""
+#   user: root
+#   port: 22
+#   ssh_key_path: ""
+#   server_path: /opt/eu-deploy
+#   app_path: /opt/eu-deploy/apps/my-app
+#   service_port: 3000
+# ovh:
+#   host: ""
+#   user: root
+#   port: 22
+#   ssh_key_path: ""
+#   server_path: /opt/eu-deploy
+#   app_path: /opt/eu-deploy/apps/my-app
+#   service_port: 3000

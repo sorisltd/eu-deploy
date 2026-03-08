@@ -18,8 +18,10 @@ import (
 
 func main() {
 	rootCmd := &cobra.Command{
-		Use:   "eu",
-		Short: "eu-deploy: EU-first deploy CLI",
+		Use:           "eu",
+		Short:         "eu-deploy: EU-first deploy CLI",
+		SilenceUsage:  true,
+		SilenceErrors: true,
 	}
 
 	initCmd := &cobra.Command{
@@ -68,6 +70,14 @@ func main() {
 				return err
 			}
 
+			if commandJSONEnabled(cmd) {
+				return emitJSONSuccess(cmd, "", map[string]any{
+					"framework": cfg.Project.Framework,
+					"path":      outPath,
+					"warnings":  d.Warnings,
+				})
+			}
+
 			fmt.Printf("OK Detected framework: %s\n", d.Framework)
 			fmt.Printf("OK Created %s\n", outPath)
 			for _, warning := range d.Warnings {
@@ -101,6 +111,17 @@ func main() {
 			}
 
 			projectName := build.ArtifactName(cfg, wd)
+			if commandJSONEnabled(cmd) {
+				return emitJSONSuccess(cmd, "", map[string]any{
+					"project":   projectName,
+					"output":    res.OutputDir,
+					"artifact":  res.ArtifactPath,
+					"sha256":    res.SHA256,
+					"metadata":  filepath.Join(".eudeploy", "build.json"),
+					"createdAt": res.CreatedAt,
+				})
+			}
+
 			fmt.Printf("OK Built %s\n", projectName)
 			fmt.Printf("OK Output: %s\n", res.OutputDir)
 			fmt.Printf("OK Artifact: %s\n", res.ArtifactPath)
@@ -109,22 +130,22 @@ func main() {
 			return nil
 		},
 	}
+	addJSONFlag(initCmd)
+	addJSONFlag(buildCmd)
 
 	deployCmd := &cobra.Command{
 		Use:   "deploy",
-		Short: "Deploy the project locally with Docker or to a Hetzner VM",
+		Short: "Deploy the project locally with Docker or to a remote SSH provider",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			wd, err := os.Getwd()
 			if err != nil {
 				return err
 			}
+			jsonMode := commandJSONEnabled(cmd)
 
-			target, err := cmd.Flags().GetString("target")
+			requestedTarget, err := cmd.Flags().GetString("target")
 			if err != nil {
 				return err
-			}
-			if strings.TrimSpace(target) == "" {
-				target = "docker"
 			}
 
 			cfgPath := filepath.Join(wd, "eudeploy.yaml")
@@ -135,6 +156,7 @@ func main() {
 				}
 				return err
 			}
+			target := resolveTarget(cfg, requestedTarget, "docker")
 			if runtimeType := strings.TrimSpace(cfg.Runtime.Type); runtimeType != "" && runtimeType != "web" {
 				return fmt.Errorf("unsupported runtime.type: %s", runtimeType)
 			}
@@ -142,10 +164,67 @@ func main() {
 			switch target {
 			case "docker":
 				return runDockerDeploy(cmd, cfg, wd)
-			case "hetzner":
-				prepared, err := deploy.PrepareHetznerConfig(&cfg, wd, deploy.PrepareHetznerConfigOptions{
-					PromptEnv: true,
-				})
+			case "hetzner", "scaleway", "ovh":
+				remoteTarget, err := deploy.ParseRemoteTarget(target)
+				if err != nil {
+					return err
+				}
+				prepared := deploy.PrepareRemoteResult{
+					EnvValues: existingDeployEnvValues(cfg),
+				}
+				if !jsonMode {
+					prepared, err = deploy.PrepareRemoteConfig(&cfg, wd, remoteTarget, deploy.PrepareRemoteConfigOptions{
+						PromptEnv: true,
+					})
+					if err != nil {
+						return err
+					}
+					if prepared.Changed {
+						if err := config.WriteYAML(cfgPath, cfg); err != nil {
+							return err
+						}
+						fmt.Printf("OK Updated %s\n", filepath.Base(cfgPath))
+					}
+				}
+				return runRemoteDeploy(cmd, cfg, wd, remoteTarget, prepared)
+			default:
+				return fmt.Errorf("unsupported target: %s", target)
+			}
+		},
+	}
+	deployCmd.Flags().String("target", "", "Deployment target (docker|hetzner|scaleway|ovh)")
+	deployCmd.Flags().Int("port", 0, "Host port (default runtime.port)")
+	deployCmd.Flags().Bool("detach", false, "Run container in background")
+	deployCmd.Flags().String("name", "", "Container name (default: eu-<project>)")
+	addJSONFlag(deployCmd)
+
+	preflightCmd := &cobra.Command{
+		Use:   "preflight",
+		Short: "Check whether a remote SSH provider VM is ready for deployment",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			jsonMode := commandJSONEnabled(cmd)
+			requestedTarget, err := cmd.Flags().GetString("target")
+			if err != nil {
+				return err
+			}
+			cfg, cfgPath, wd, err := loadConfigFromWorkingDir()
+			if err != nil {
+				return err
+			}
+			target := resolveTarget(cfg, requestedTarget, "hetzner")
+			if !deploy.IsRemoteTarget(target) {
+				return fmt.Errorf("unsupported target: %s", target)
+			}
+			if runtimeType := strings.TrimSpace(cfg.Runtime.Type); runtimeType != "" && runtimeType != "web" {
+				return fmt.Errorf("unsupported runtime.type: %s", runtimeType)
+			}
+
+			remoteTarget, err := deploy.ParseRemoteTarget(target)
+			if err != nil {
+				return err
+			}
+			if !jsonMode {
+				prepared, err := deploy.PrepareRemoteConfig(&cfg, wd, remoteTarget, deploy.PrepareRemoteConfigOptions{})
 				if err != nil {
 					return err
 				}
@@ -155,126 +234,382 @@ func main() {
 					}
 					fmt.Printf("OK Updated %s\n", filepath.Base(cfgPath))
 				}
-				return runHetznerDeploy(cfg, wd, prepared)
-			default:
-				return fmt.Errorf("unsupported target: %s", target)
 			}
+
+			return runRemotePreflight(cmd, cfg, wd, remoteTarget)
 		},
 	}
-	deployCmd.Flags().String("target", "docker", "Deployment target (docker|hetzner)")
-	deployCmd.Flags().Int("port", 0, "Host port (default runtime.port)")
-	deployCmd.Flags().Bool("detach", false, "Run container in background")
-	deployCmd.Flags().String("name", "", "Container name (default: eu-<project>)")
-
-	preflightCmd := &cobra.Command{
-		Use:   "preflight",
-		Short: "Check whether a Hetzner VM is ready for deployment",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			target, err := cmd.Flags().GetString("target")
-			if err != nil {
-				return err
-			}
-			if strings.TrimSpace(target) == "" {
-				target = "hetzner"
-			}
-			if target != "hetzner" {
-				return fmt.Errorf("unsupported target: %s", target)
-			}
-
-			cfg, cfgPath, wd, err := loadConfigFromWorkingDir()
-			if err != nil {
-				return err
-			}
-			if runtimeType := strings.TrimSpace(cfg.Runtime.Type); runtimeType != "" && runtimeType != "web" {
-				return fmt.Errorf("unsupported runtime.type: %s", runtimeType)
-			}
-
-			prepared, err := deploy.PrepareHetznerConfig(&cfg, wd, deploy.PrepareHetznerConfigOptions{})
-			if err != nil {
-				return err
-			}
-			if prepared.Changed {
-				if err := config.WriteYAML(cfgPath, cfg); err != nil {
-					return err
-				}
-				fmt.Printf("OK Updated %s\n", filepath.Base(cfgPath))
-			}
-
-			return runHetznerPreflight(cfg, wd)
-		},
-	}
-	preflightCmd.Flags().String("target", "hetzner", "Preflight target (hetzner)")
+	preflightCmd.Flags().String("target", "", "Preflight target (hetzner|scaleway|ovh)")
+	addJSONFlag(preflightCmd)
 
 	bootstrapCmd := &cobra.Command{
 		Use:   "bootstrap",
-		Short: "Prepare a Hetzner VM for eu-deploy",
+		Short: "Prepare a remote SSH provider VM for eu-deploy",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			target, err := cmd.Flags().GetString("target")
+			jsonMode := commandJSONEnabled(cmd)
+			requestedTarget, err := cmd.Flags().GetString("target")
 			if err != nil {
 				return err
-			}
-			if strings.TrimSpace(target) == "" {
-				target = "hetzner"
-			}
-			if target != "hetzner" {
-				return fmt.Errorf("unsupported target: %s", target)
 			}
 
 			cfg, cfgPath, wd, err := loadConfigFromWorkingDir()
 			if err != nil {
 				return err
 			}
+			target := resolveTarget(cfg, requestedTarget, "hetzner")
+			if !deploy.IsRemoteTarget(target) {
+				return fmt.Errorf("unsupported target: %s", target)
+			}
 			if runtimeType := strings.TrimSpace(cfg.Runtime.Type); runtimeType != "" && runtimeType != "web" {
 				return fmt.Errorf("unsupported runtime.type: %s", runtimeType)
 			}
 
-			prepared, err := deploy.PrepareHetznerConfig(&cfg, wd, deploy.PrepareHetznerConfigOptions{})
+			remoteTarget, err := deploy.ParseRemoteTarget(target)
 			if err != nil {
 				return err
 			}
-			if prepared.Changed {
-				if err := config.WriteYAML(cfgPath, cfg); err != nil {
+			var opts deploy.HetznerBootstrapOptions
+			if jsonMode {
+				opts, err = buildBootstrapOptions(cfg, remoteTarget)
+			} else {
+				prepared, err := deploy.PrepareRemoteConfig(&cfg, wd, remoteTarget, deploy.PrepareRemoteConfigOptions{})
+				if err != nil {
 					return err
 				}
-				fmt.Printf("OK Updated %s\n", filepath.Base(cfgPath))
+				if prepared.Changed {
+					if err := config.WriteYAML(cfgPath, cfg); err != nil {
+						return err
+					}
+					fmt.Printf("OK Updated %s\n", filepath.Base(cfgPath))
+				}
+				opts, err = deploy.PromptRemoteBootstrapOptions(cfg, remoteTarget)
 			}
-			if cfg.Hetzner == nil {
-				return fmt.Errorf("hetzner config is missing")
-			}
-
-			opts, err := deploy.PromptHetznerBootstrapOptions(cfg)
 			if err != nil {
 				return err
 			}
 
-			fmt.Printf("Bootstrapping %s@%s...\n", cfg.Hetzner.User, cfg.Hetzner.Host)
-			if err := deploy.BootstrapHetzner(opts); err != nil {
+			if !jsonMode {
+				fmt.Printf("Bootstrapping %s@%s...\n", opts.RemoteUser, opts.RemoteHost)
+			}
+			if err := deploy.BootstrapRemote(opts); err != nil {
 				return err
+			}
+
+			if jsonMode {
+				return emitJSONSuccess(cmd, string(remoteTarget), map[string]any{
+					"host":              opts.RemoteHost,
+					"user":              opts.RemoteUser,
+					"serverRoot":        opts.RemoteServerPath,
+					"appPath":           opts.RemoteAppPath,
+					"reconnectRequired": opts.RemoteUser != "root",
+				})
 			}
 
 			fmt.Printf("OK Server root: %s\n", opts.RemoteServerPath)
 			fmt.Printf("OK App path: %s\n", opts.RemoteAppPath)
-			if cfg.Hetzner.User != "root" {
-				fmt.Printf("NOTE Reconnect your SSH session before deploy so docker group membership takes effect for %s.\n", cfg.Hetzner.User)
+			if opts.RemoteUser != "root" {
+				fmt.Printf("NOTE Reconnect your SSH session before deploy so docker group membership takes effect for %s.\n", opts.RemoteUser)
 			}
 			return nil
 		},
 	}
-	bootstrapCmd.Flags().String("target", "hetzner", "Bootstrap target (hetzner)")
+	bootstrapCmd.Flags().String("target", "", "Bootstrap target (hetzner|scaleway|ovh)")
+	addJSONFlag(bootstrapCmd)
 
-	rootCmd.AddCommand(initCmd, buildCmd, deployCmd, preflightCmd, bootstrapCmd)
+	logsCmd := &cobra.Command{
+		Use:   "logs",
+		Short: "Stream remote container logs",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			jsonMode := commandJSONEnabled(cmd)
+			cfg, cfgPath, wd, err := loadConfigFromWorkingDir()
+			if err != nil {
+				return err
+			}
+			requestedTarget, err := cmd.Flags().GetString("target")
+			if err != nil {
+				return err
+			}
+			target := resolveTarget(cfg, requestedTarget, "hetzner")
+			if !deploy.IsRemoteTarget(target) {
+				return fmt.Errorf("unsupported target: %s", target)
+			}
+			remoteTarget, err := deploy.ParseRemoteTarget(target)
+			if err != nil {
+				return err
+			}
+			if !jsonMode {
+				prepared, err := deploy.PrepareRemoteConfig(&cfg, wd, remoteTarget, deploy.PrepareRemoteConfigOptions{})
+				if err != nil {
+					return err
+				}
+				if prepared.Changed {
+					if err := config.WriteYAML(cfgPath, cfg); err != nil {
+						return err
+					}
+					fmt.Printf("OK Updated %s\n", filepath.Base(cfgPath))
+				}
+			}
+
+			component, err := cmd.Flags().GetString("component")
+			if err != nil {
+				return err
+			}
+			follow, err := cmd.Flags().GetBool("follow")
+			if err != nil {
+				return err
+			}
+			tail, err := cmd.Flags().GetInt("tail")
+			if err != nil {
+				return err
+			}
+
+			opts, err := buildRemoteOptions(cfg, wd, remoteTarget, "", "")
+			if err != nil {
+				return err
+			}
+			if jsonMode {
+				return deploy.LogsRemoteJSON(opts, component, follow, tail, os.Stdout)
+			}
+			return deploy.LogsRemote(opts, component, follow, tail)
+		},
+	}
+	logsCmd.Flags().String("target", "", "Logs target (hetzner|scaleway|ovh)")
+	logsCmd.Flags().String("component", "app", "Container component to inspect (app|proxy|postgres)")
+	logsCmd.Flags().Bool("follow", true, "Follow log output")
+	logsCmd.Flags().Int("tail", 200, "Number of log lines to show before streaming")
+	addJSONFlag(logsCmd)
+
+	releasesCmd := &cobra.Command{
+		Use:   "releases",
+		Short: "List remote release history",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			jsonMode := commandJSONEnabled(cmd)
+			cfg, cfgPath, wd, err := loadConfigFromWorkingDir()
+			if err != nil {
+				return err
+			}
+			requestedTarget, err := cmd.Flags().GetString("target")
+			if err != nil {
+				return err
+			}
+			target := resolveTarget(cfg, requestedTarget, "hetzner")
+			if !deploy.IsRemoteTarget(target) {
+				return fmt.Errorf("unsupported target: %s", target)
+			}
+			remoteTarget, err := deploy.ParseRemoteTarget(target)
+			if err != nil {
+				return err
+			}
+			if !jsonMode {
+				prepared, err := deploy.PrepareRemoteConfig(&cfg, wd, remoteTarget, deploy.PrepareRemoteConfigOptions{})
+				if err != nil {
+					return err
+				}
+				if prepared.Changed {
+					if err := config.WriteYAML(cfgPath, cfg); err != nil {
+						return err
+					}
+					fmt.Printf("OK Updated %s\n", filepath.Base(cfgPath))
+				}
+			}
+
+			opts, err := buildRemoteOptions(cfg, wd, remoteTarget, "", "")
+			if err != nil {
+				return err
+			}
+			records, err := deploy.FetchRemoteReleaseHistory(opts)
+			if err != nil {
+				return err
+			}
+			views := releaseViewsByNewest(records)
+			limit, err := cmd.Flags().GetInt("limit")
+			if err != nil {
+				return err
+			}
+			if limit > 0 && len(views) > limit {
+				views = views[:limit]
+			}
+
+			if jsonMode {
+				currentRelease := ""
+				for _, view := range views {
+					if view.Current {
+						currentRelease = view.ID
+						break
+					}
+				}
+				return emitJSONSuccess(cmd, string(remoteTarget), map[string]any{
+					"releases":       views,
+					"count":          len(views),
+					"totalCount":     len(records),
+					"currentRelease": currentRelease,
+					"order":          "newestFirst",
+					"host":           opts.RemoteHost,
+					"appPath":        opts.RemoteAppPath,
+				})
+			}
+
+			if len(views) == 0 {
+				fmt.Println("No releases found.")
+				return nil
+			}
+			for _, view := range views {
+				marker := " "
+				if view.Current {
+					marker = "*"
+				}
+				fmt.Printf("%s %s  slot=%s port=%d  %s  %s\n", marker, view.ID, view.Slot, view.Port, view.ActivatedAt, view.Image)
+			}
+			return nil
+		},
+	}
+	releasesCmd.Flags().String("target", "", "Release history target (hetzner|scaleway|ovh)")
+	releasesCmd.Flags().Int("limit", 0, "Limit the number of releases shown")
+	addJSONFlag(releasesCmd)
+
+	destroyCmd := &cobra.Command{
+		Use:   "destroy",
+		Short: "Remove a remote deployment",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			jsonMode := commandJSONEnabled(cmd)
+			cfg, cfgPath, wd, err := loadConfigFromWorkingDir()
+			if err != nil {
+				return err
+			}
+			requestedTarget, err := cmd.Flags().GetString("target")
+			if err != nil {
+				return err
+			}
+			target := resolveTarget(cfg, requestedTarget, "hetzner")
+			if !deploy.IsRemoteTarget(target) {
+				return fmt.Errorf("unsupported target: %s", target)
+			}
+			remoteTarget, err := deploy.ParseRemoteTarget(target)
+			if err != nil {
+				return err
+			}
+			if !jsonMode {
+				prepared, err := deploy.PrepareRemoteConfig(&cfg, wd, remoteTarget, deploy.PrepareRemoteConfigOptions{})
+				if err != nil {
+					return err
+				}
+				if prepared.Changed {
+					if err := config.WriteYAML(cfgPath, cfg); err != nil {
+						return err
+					}
+					fmt.Printf("OK Updated %s\n", filepath.Base(cfgPath))
+				}
+			}
+			opts, err := buildRemoteOptions(cfg, wd, remoteTarget, "", "")
+			if err != nil {
+				return err
+			}
+			dropDatabase, err := cmd.Flags().GetBool("drop-database")
+			if err != nil {
+				return err
+			}
+			if err := deploy.DestroyRemote(opts, dropDatabase); err != nil {
+				return err
+			}
+			if jsonMode {
+				return emitJSONSuccess(cmd, string(remoteTarget), map[string]any{
+					"host":         opts.RemoteHost,
+					"appPath":      opts.RemoteAppPath,
+					"dropDatabase": dropDatabase,
+				})
+			}
+			return nil
+		},
+	}
+	destroyCmd.Flags().String("target", "", "Destroy target (hetzner|scaleway|ovh)")
+	destroyCmd.Flags().Bool("drop-database", false, "Also drop the app database and role when using shared PostgreSQL")
+	addJSONFlag(destroyCmd)
+
+	rollbackCmd := &cobra.Command{
+		Use:   "rollback",
+		Short: "Roll back a remote deployment to the previous release",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			jsonMode := commandJSONEnabled(cmd)
+			cfg, cfgPath, wd, err := loadConfigFromWorkingDir()
+			if err != nil {
+				return err
+			}
+			requestedTarget, err := cmd.Flags().GetString("target")
+			if err != nil {
+				return err
+			}
+			target := resolveTarget(cfg, requestedTarget, "hetzner")
+			if !deploy.IsRemoteTarget(target) {
+				return fmt.Errorf("unsupported target: %s", target)
+			}
+			remoteTarget, err := deploy.ParseRemoteTarget(target)
+			if err != nil {
+				return err
+			}
+			if !jsonMode {
+				prepared, err := deploy.PrepareRemoteConfig(&cfg, wd, remoteTarget, deploy.PrepareRemoteConfigOptions{})
+				if err != nil {
+					return err
+				}
+				if prepared.Changed {
+					if err := config.WriteYAML(cfgPath, cfg); err != nil {
+						return err
+					}
+					fmt.Printf("OK Updated %s\n", filepath.Base(cfgPath))
+				}
+			}
+			opts, err := buildRemoteOptions(cfg, wd, remoteTarget, "", "")
+			if err != nil {
+				return err
+			}
+			releaseID, err := cmd.Flags().GetString("to")
+			if err != nil {
+				return err
+			}
+			record, err := deploy.RollbackRemote(opts, strings.TrimSpace(releaseID))
+			if err != nil {
+				return err
+			}
+			if jsonMode {
+				return emitJSONSuccess(cmd, string(remoteTarget), map[string]any{
+					"release":        jsonReleaseView{ReleaseRecord: record, Current: true},
+					"hostname":       cfg.Routes[0].Hostname,
+					"databaseNotice": "database schema changes are not rolled back automatically",
+				})
+			}
+			fmt.Printf("OK Rolled back to release: %s\n", record.ID)
+			fmt.Printf("OK Image: %s\n", record.Image)
+			fmt.Println("NOTE Database schema changes are not rolled back automatically.")
+			return nil
+		},
+	}
+	rollbackCmd.Flags().String("target", "", "Rollback target (hetzner|scaleway|ovh)")
+	rollbackCmd.Flags().String("to", "", "Specific release ID to activate instead of the previous distinct release")
+	addJSONFlag(rollbackCmd)
+
+	rootCmd.AddCommand(initCmd, buildCmd, deployCmd, preflightCmd, bootstrapCmd, logsCmd, releasesCmd, destroyCmd, rollbackCmd)
 
 	if err := rootCmd.Execute(); err != nil {
+		if argsWantJSON(os.Args[1:]) {
+			emitJSONError(err)
+		} else {
+			fmt.Fprintln(os.Stderr, err)
+		}
 		os.Exit(1)
 	}
 }
 
 func runDockerDeploy(cmd *cobra.Command, cfg config.Config, wd string) error {
+	jsonMode := commandJSONEnabled(cmd)
+	phases := dockerDeployPhaseDefinitions()
 	res, built, err := build.EnsureArtifact(cfg, wd, true)
 	if err != nil {
+		if jsonMode {
+			return newJSONCommandError(cmd, "docker", err, failedPhaseData(phases, 0))
+		}
 		return err
 	}
-	if built {
+	if built && !jsonMode {
 		fmt.Printf("OK Build complete\n")
 	}
 
@@ -331,18 +666,40 @@ func runDockerDeploy(cmd *cobra.Command, cfg config.Config, wd string) error {
 	}
 
 	if err := deploy.BuildDockerImage(opts); err != nil {
+		if jsonMode {
+			return newJSONCommandError(cmd, "docker", err, failedPhaseData(phases, 1))
+		}
 		return err
 	}
 
-	fmt.Printf("OK Image: %s\n", imageTag)
-	if detach {
-		fmt.Printf("Starting container %s in background...\n", containerName)
-	} else {
-		fmt.Printf("Starting container %s in attached mode on http://localhost:%d\n", containerName, port)
+	if !jsonMode {
+		fmt.Printf("OK Image: %s\n", imageTag)
+		if detach {
+			fmt.Printf("Starting container %s in background...\n", containerName)
+		} else {
+			fmt.Printf("Starting container %s in attached mode on http://localhost:%d\n", containerName, port)
+		}
 	}
 
 	if err := deploy.RunDockerContainer(opts); err != nil {
+		if jsonMode {
+			return newJSONCommandError(cmd, "docker", err, failedPhaseData(phases, 2))
+		}
 		return err
+	}
+	if jsonMode {
+		return emitJSONSuccess(cmd, "docker", mergeJSONData(
+			completedPhaseData(phases),
+			map[string]any{
+				"built":         built,
+				"image":         imageTag,
+				"containerName": containerName,
+				"hostPort":      port,
+				"containerPort": cfg.Runtime.Port,
+				"artifact":      res.ArtifactPath,
+				"sha256":        res.SHA256,
+			},
+		))
 	}
 	if detach {
 		fmt.Printf("OK Container: %s\n", containerName)
@@ -351,12 +708,18 @@ func runDockerDeploy(cmd *cobra.Command, cfg config.Config, wd string) error {
 	return nil
 }
 
-func runHetznerDeploy(cfg config.Config, wd string, prepared deploy.PrepareHetznerResult) error {
+func runRemoteDeploy(cmd *cobra.Command, cfg config.Config, wd string, target deploy.RemoteTarget, prepared deploy.PrepareRemoteResult) error {
+	jsonMode := commandJSONEnabled(cmd)
+	phases := remoteDeployPhaseDefinitions()
+	currentPhase := 1
 	res, built, err := build.EnsureArtifact(cfg, wd, true)
 	if err != nil {
+		if jsonMode {
+			return newJSONCommandError(cmd, string(target), err, failedPhaseData(phases, 0))
+		}
 		return err
 	}
-	if built {
+	if built && !jsonMode {
 		fmt.Printf("OK Build complete\n")
 	}
 
@@ -366,47 +729,88 @@ func runHetznerDeploy(cfg config.Config, wd string, prepared deploy.PrepareHetzn
 	if cfg.Runtime.Port == 0 {
 		return fmt.Errorf("runtime.port is empty in eudeploy.yaml")
 	}
-	if cfg.Hetzner == nil {
-		return fmt.Errorf("hetzner config is missing")
-	}
 	if len(cfg.Routes) == 0 || strings.TrimSpace(cfg.Routes[0].Hostname) == "" {
-		return fmt.Errorf("routes[0].hostname is required for hetzner deploys")
+		return fmt.Errorf("routes[0].hostname is required for remote deploys")
 	}
 
-	projectName := build.ArtifactName(cfg, wd)
-	safeProject := deploy.SanitizeDockerName(projectName)
 	installDependencies, err := build.RequiresDependencyInstall(cfg, wd)
 	if err != nil {
 		return err
 	}
 
-	opts := buildHetznerOptions(cfg, wd, safeProject, prepared.SharedDatabasePassword)
+	opts, err := buildRemoteOptions(cfg, wd, target, res.SHA256, prepared.SharedDatabasePassword)
+	if err != nil {
+		return err
+	}
 	opts.ArtifactPath = res.ArtifactPath
+	opts.ArtifactSHA = res.SHA256
+	opts.ReleaseID = deploy.BuildReleaseID(res.SHA256)
 	opts.InstallDependencies = installDependencies
 	opts.Env = prepared.EnvValues
 
-	fmt.Printf("Uploading release to %s@%s...\n", cfg.Hetzner.User, cfg.Hetzner.Host)
-	if err := deploy.DeployToHetzner(opts); err != nil {
+	if !jsonMode {
+		fmt.Printf("Uploading release to %s@%s...\n", opts.RemoteUser, opts.RemoteHost)
+	}
+	if err := deploy.DeployToRemoteWithHooks(opts, deploy.RemoteDeployHooks{
+		OnPhase: func(phaseID string) {
+			switch phaseID {
+			case "activateRelease":
+				currentPhase = 2
+			default:
+				currentPhase = 1
+			}
+		},
+	}); err != nil {
+		if jsonMode {
+			return newJSONCommandError(cmd, string(target), err, failedPhaseData(phases, currentPhase))
+		}
 		return err
 	}
 
-	fmt.Printf("OK Server root: %s\n", cfg.Hetzner.ServerPath)
-	fmt.Printf("OK Remote app path: %s\n", cfg.Hetzner.AppPath)
+	if jsonMode {
+		return emitJSONSuccess(cmd, string(target), mergeJSONData(
+			completedPhaseData(phases),
+			map[string]any{
+				"built":      built,
+				"releaseId":  opts.ReleaseID,
+				"hostname":   cfg.Routes[0].Hostname,
+				"serverRoot": opts.RemoteServerPath,
+				"appPath":    opts.RemoteAppPath,
+				"artifact":   res.ArtifactPath,
+				"sha256":     res.SHA256,
+				"host":       opts.RemoteHost,
+				"user":       opts.RemoteUser,
+			},
+		))
+	}
+
+	fmt.Printf("OK Release: %s\n", opts.ReleaseID)
+	fmt.Printf("OK Server root: %s\n", opts.RemoteServerPath)
+	fmt.Printf("OK Remote app path: %s\n", opts.RemoteAppPath)
 	fmt.Printf("✓ Running at https://%s\n", cfg.Routes[0].Hostname)
 	return nil
 }
 
-func runHetznerPreflight(cfg config.Config, wd string) error {
-	projectName := build.ArtifactName(cfg, wd)
-	opts := buildHetznerOptions(cfg, wd, deploy.SanitizeDockerName(projectName), "")
+func runRemotePreflight(cmd *cobra.Command, cfg config.Config, wd string, target deploy.RemoteTarget) error {
+	jsonMode := commandJSONEnabled(cmd)
+	opts, err := buildRemoteOptions(cfg, wd, target, "", "")
+	if err != nil {
+		return err
+	}
 
-	results, err := deploy.PreflightHetzner(opts)
+	results, err := deploy.PreflightRemote(opts)
 	if err != nil {
 		return err
 	}
 
 	var failed bool
 	for _, result := range results {
+		if jsonMode {
+			if result.Status == deploy.PreflightFailure {
+				failed = true
+			}
+			continue
+		}
 		label := "OK"
 		switch result.Status {
 		case deploy.PreflightWarning:
@@ -418,13 +822,30 @@ func runHetznerPreflight(cfg config.Config, wd string) error {
 		fmt.Printf("%-5s %s: %s\n", label, result.Name, result.Detail)
 	}
 
+	warnings := slices.ContainsFunc(results, func(result deploy.PreflightResult) bool {
+		return result.Status == deploy.PreflightWarning
+	})
+
+	if jsonMode {
+		data := map[string]any{
+			"results":       results,
+			"hasWarnings":   warnings,
+			"failed":        failed,
+			"remoteHost":    opts.RemoteHost,
+			"remoteUser":    opts.RemoteUser,
+			"remoteAppPath": opts.RemoteAppPath,
+		}
+		if failed {
+			return newJSONCommandError(cmd, string(target), fmt.Errorf("preflight failed"), data)
+		}
+		return emitJSONSuccess(cmd, string(target), data)
+	}
+
 	if failed {
 		return fmt.Errorf("preflight failed")
 	}
 
-	if slices.ContainsFunc(results, func(result deploy.PreflightResult) bool {
-		return result.Status == deploy.PreflightWarning
-	}) {
+	if warnings {
 		fmt.Println("NOTE Preflight passed with warnings.")
 		return nil
 	}
@@ -433,27 +854,36 @@ func runHetznerPreflight(cfg config.Config, wd string) error {
 	return nil
 }
 
-func buildHetznerOptions(cfg config.Config, wd, safeProject, sharedDatabasePassword string) deploy.HetznerOptions {
-	opts := deploy.HetznerOptions{
+func buildRemoteOptions(cfg config.Config, wd string, target deploy.RemoteTarget, artifactSHA, sharedDatabasePassword string) (deploy.RemoteOptions, error) {
+	spec, ok := deploy.RemoteProviderSpecForTarget(cfg, target)
+	if !ok || spec == nil {
+		return deploy.RemoteOptions{}, fmt.Errorf("%s config is missing", target)
+	}
+
+	projectName := build.ArtifactName(cfg, wd)
+	safeProject := deploy.SanitizeDockerName(projectName)
+	opts := deploy.RemoteOptions{
+		Provider:           target,
 		WorkDir:            wd,
+		ArtifactSHA:        artifactSHA,
 		RuntimeStart:       cfg.Runtime.Start,
 		ContainerPort:      cfg.Runtime.Port,
-		ServicePort:        cfg.Hetzner.ServicePort,
+		ServicePort:        spec.ServicePort,
 		ImageTag:           fmt.Sprintf("eu-deploy-%s:remote", safeProject),
 		AppContainerName:   fmt.Sprintf("eu-%s-app", safeProject),
 		ProxyContainerName: deploy.SharedProxyContainerName(),
-		RemoteHost:         cfg.Hetzner.Host,
-		RemoteUser:         cfg.Hetzner.User,
-		RemotePort:         cfg.Hetzner.Port,
-		SSHKeyPath:         cfg.Hetzner.SSHKeyPath,
-		RemoteServerPath:   cfg.Hetzner.ServerPath,
-		RemoteAppPath:      cfg.Hetzner.AppPath,
+		RemoteHost:         spec.Host,
+		RemoteUser:         spec.User,
+		RemotePort:         spec.Port,
+		SSHKeyPath:         spec.SSHKeyPath,
+		RemoteServerPath:   spec.ServerPath,
+		RemoteAppPath:      spec.AppPath,
 		Hostname:           cfg.Routes[0].Hostname,
 		RoutePath:          cfg.Routes[0].Path,
 		HealthcheckPath:    cfg.Runtime.Healthcheck.Path,
 		SiteConfigName:     deploy.BuildHetznerSiteConfigName(cfg.Routes[0].Hostname),
+		KeepReleases:       3,
 	}
-
 	if cfg.Database != nil && strings.TrimSpace(cfg.Database.Mode) == "shared" && cfg.Database.Shared != nil {
 		opts.SharedDatabase = &deploy.SharedDatabaseOptions{
 			Version:  cfg.Database.Shared.Version,
@@ -469,7 +899,7 @@ func buildHetznerOptions(cfg config.Config, wd, safeProject, sharedDatabasePassw
 		}
 	}
 
-	return opts
+	return opts, nil
 }
 
 func loadConfigFromWorkingDir() (config.Config, string, string, error) {
@@ -488,4 +918,74 @@ func loadConfigFromWorkingDir() (config.Config, string, string, error) {
 	}
 
 	return cfg, cfgPath, wd, nil
+}
+
+func resolveTarget(cfg config.Config, requested, fallback string) string {
+	requested = strings.TrimSpace(strings.ToLower(requested))
+	if requested != "" {
+		return requested
+	}
+	return deploy.PreferredDeployTarget(cfg, fallback)
+}
+
+func existingDeployEnvValues(cfg config.Config) map[string]string {
+	values := map[string]string{}
+	generatedDatabaseURL := cfg.Database != nil && strings.TrimSpace(cfg.Database.Mode) == "shared"
+
+	for key, value := range cfg.Env.Public {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			values[key] = value
+		}
+	}
+	for key, value := range cfg.Env.Secret {
+		if generatedDatabaseURL && key == "DATABASE_URL" {
+			continue
+		}
+		value = strings.TrimSpace(value)
+		if value != "" {
+			values[key] = value
+		}
+	}
+	return values
+}
+
+func buildBootstrapOptions(cfg config.Config, target deploy.RemoteTarget) (deploy.HetznerBootstrapOptions, error) {
+	spec, ok := deploy.RemoteProviderSpecForTarget(cfg, target)
+	if !ok || spec == nil {
+		return deploy.HetznerBootstrapOptions{}, fmt.Errorf("%s config is missing", target)
+	}
+	serverPath := strings.TrimSpace(spec.ServerPath)
+	if serverPath == "" && strings.TrimSpace(spec.AppPath) != "" {
+		serverPath = filepath.ToSlash(filepath.Clean(filepath.Dir(spec.AppPath)))
+	}
+	if serverPath == "" {
+		if strings.TrimSpace(spec.User) == "" || strings.TrimSpace(spec.User) == "root" {
+			serverPath = "/opt/eu-deploy"
+		} else {
+			serverPath = filepath.ToSlash(filepath.Join("/home", spec.User, "eu-deploy"))
+		}
+	}
+
+	var sharedDatabase *deploy.SharedDatabaseOptions
+	if cfg.Database != nil && strings.TrimSpace(cfg.Database.Mode) == "shared" && cfg.Database.Shared != nil {
+		sharedDatabase = &deploy.SharedDatabaseOptions{
+			Version: cfg.Database.Shared.Version,
+			Name:    cfg.Database.Shared.Name,
+			User:    cfg.Database.Shared.User,
+		}
+	}
+
+	return deploy.HetznerBootstrapOptions{
+		Provider:         target,
+		RemoteHost:       spec.Host,
+		RemoteUser:       spec.User,
+		RemotePort:       spec.Port,
+		SSHKeyPath:       spec.SSHKeyPath,
+		RemoteServerPath: serverPath,
+		RemoteAppPath:    spec.AppPath,
+		InstallUFW:       true,
+		InstallFail2ban:  false,
+		SharedDatabase:   sharedDatabase,
+	}, nil
 }

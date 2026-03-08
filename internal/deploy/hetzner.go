@@ -21,11 +21,15 @@ const (
 	sharedDockerNetwork     = "eu-deploy"
 	sharedPostgresDirName   = "_postgres"
 	sharedPostgresContainer = "eu-shared-postgres"
+	defaultReleaseKeepCount = 3
 )
 
-type HetznerOptions struct {
+type RemoteOptions struct {
+	Provider            RemoteTarget
 	WorkDir             string
 	ArtifactPath        string
+	ArtifactSHA         string
+	ReleaseID           string
 	RuntimeStart        string
 	ContainerPort       int
 	ServicePort         int
@@ -46,7 +50,10 @@ type HetznerOptions struct {
 	SharedDatabase      *SharedDatabaseOptions
 	PostDeploy          *PostDeployOptions
 	Env                 map[string]string
+	KeepReleases        int
 }
+
+type HetznerOptions = RemoteOptions
 
 type SharedDatabaseOptions struct {
 	Version  string
@@ -60,28 +67,45 @@ type PostDeployOptions struct {
 	Include []string
 }
 
-type PrepareHetznerConfigOptions struct {
+type PrepareRemoteConfigOptions struct {
 	PromptEnv bool
 }
 
-type PrepareHetznerResult struct {
+type PrepareRemoteResult struct {
 	Changed                bool
 	EnvValues              map[string]string
 	SharedDatabasePassword string
 }
 
-func PrepareHetznerConfig(cfg *config.Config, workDir string, options PrepareHetznerConfigOptions) (PrepareHetznerResult, error) {
+type PrepareHetznerConfigOptions = PrepareRemoteConfigOptions
+type PrepareHetznerResult = PrepareRemoteResult
+
+type RemoteDeployHooks struct {
+	OnPhase func(phaseID string)
+}
+
+func PrepareRemoteConfig(cfg *config.Config, workDir string, target RemoteTarget, options PrepareRemoteConfigOptions) (PrepareRemoteResult, error) {
 	p := &linePrompter{
 		in:  bufio.NewReader(os.Stdin),
 		out: os.Stdout,
 	}
 
 	changed := false
+	if cfg.Deploy.Provider == "" {
+		cfg.Deploy.Provider = string(target)
+		changed = true
+	}
+
+	spec := EnsureRemoteProviderSpec(cfg, target)
+	if spec == nil {
+		return PrepareRemoteResult{}, fmt.Errorf("%s config is missing", target)
+	}
+	providerLabel := RemoteTargetLabel(target)
 
 	if strings.TrimSpace(cfg.Build.Command) == "" {
 		value, err := p.String("Build command", defaultBuildCommand(cfg.Project.Framework), true)
 		if err != nil {
-			return PrepareHetznerResult{}, err
+			return PrepareRemoteResult{}, err
 		}
 		cfg.Build.Command = value
 		changed = true
@@ -89,7 +113,7 @@ func PrepareHetznerConfig(cfg *config.Config, workDir string, options PrepareHet
 	if strings.TrimSpace(cfg.Build.Output) == "" {
 		value, err := p.String("Build output directory", defaultBuildOutput(cfg.Project.Framework), true)
 		if err != nil {
-			return PrepareHetznerResult{}, err
+			return PrepareRemoteResult{}, err
 		}
 		cfg.Build.Output = value
 		changed = true
@@ -97,7 +121,7 @@ func PrepareHetznerConfig(cfg *config.Config, workDir string, options PrepareHet
 	if strings.TrimSpace(cfg.Runtime.Start) == "" {
 		value, err := p.String("Runtime start command", defaultRuntimeStart(cfg.Project.Framework), true)
 		if err != nil {
-			return PrepareHetznerResult{}, err
+			return PrepareRemoteResult{}, err
 		}
 		cfg.Runtime.Start = value
 		changed = true
@@ -105,7 +129,7 @@ func PrepareHetznerConfig(cfg *config.Config, workDir string, options PrepareHet
 	if cfg.Runtime.Port == 0 {
 		value, err := p.Int("Runtime port", 3000, true)
 		if err != nil {
-			return PrepareHetznerResult{}, err
+			return PrepareRemoteResult{}, err
 		}
 		cfg.Runtime.Port = value
 		changed = true
@@ -113,7 +137,7 @@ func PrepareHetznerConfig(cfg *config.Config, workDir string, options PrepareHet
 	if strings.TrimSpace(cfg.Runtime.Healthcheck.Path) == "" || strings.TrimSpace(cfg.Runtime.Healthcheck.Path) == "/health" {
 		value, err := p.String("Healthcheck path", "/", true)
 		if err != nil {
-			return PrepareHetznerResult{}, err
+			return PrepareRemoteResult{}, err
 		}
 		cfg.Runtime.Healthcheck.Path = value
 		changed = true
@@ -130,82 +154,77 @@ func PrepareHetznerConfig(cfg *config.Config, workDir string, options PrepareHet
 	if isPlaceholderHostname(cfg.Routes[0].Hostname) {
 		value, err := p.String("Public hostname", "", true)
 		if err != nil {
-			return PrepareHetznerResult{}, err
+			return PrepareRemoteResult{}, err
 		}
 		cfg.Routes[0].Hostname = value
 		changed = true
 	}
 
-	if cfg.Hetzner == nil {
-		cfg.Hetzner = &config.HetznerSpec{}
-		changed = true
-	}
-
-	if strings.TrimSpace(cfg.Hetzner.Host) == "" {
-		value, err := p.String("Hetzner server IP or hostname", "", true)
+	if strings.TrimSpace(spec.Host) == "" {
+		value, err := p.String(fmt.Sprintf("%s server IP or hostname", providerLabel), "", true)
 		if err != nil {
-			return PrepareHetznerResult{}, err
+			return PrepareRemoteResult{}, err
 		}
-		cfg.Hetzner.Host = value
+		spec.Host = value
 		changed = true
 	}
-	if strings.TrimSpace(cfg.Hetzner.User) == "" {
+	if strings.TrimSpace(spec.User) == "" {
 		value, err := p.String("SSH user", "root", true)
 		if err != nil {
-			return PrepareHetznerResult{}, err
+			return PrepareRemoteResult{}, err
 		}
-		cfg.Hetzner.User = value
+		spec.User = value
 		changed = true
 	}
-	if cfg.Hetzner.Port == 0 {
+	if spec.Port == 0 {
 		value, err := p.Int("SSH port", 22, true)
 		if err != nil {
-			return PrepareHetznerResult{}, err
+			return PrepareRemoteResult{}, err
 		}
-		cfg.Hetzner.Port = value
+		spec.Port = value
 		changed = true
 	}
-	if strings.TrimSpace(cfg.Hetzner.SSHKeyPath) == "" {
+	if strings.TrimSpace(spec.SSHKeyPath) == "" {
 		defaultKey := defaultSSHKeyPath()
 		value, err := p.String("SSH key path (leave blank to use ssh defaults)", defaultKey, false)
 		if err != nil {
-			return PrepareHetznerResult{}, err
+			return PrepareRemoteResult{}, err
 		}
-		cfg.Hetzner.SSHKeyPath = value
+		spec.SSHKeyPath = value
 		changed = true
 	}
 
-	serverPath := strings.TrimSpace(cfg.Hetzner.ServerPath)
+	serverPath := strings.TrimSpace(spec.ServerPath)
 	if serverPath == "" {
-		serverPath = effectiveHetznerServerPath(*cfg.Hetzner, cfg.Project.Name)
+		serverPath = effectiveRemoteServerPath(*spec, cfg.Project.Name)
 		value, err := p.String("Remote server root", serverPath, true)
 		if err != nil {
-			return PrepareHetznerResult{}, err
+			return PrepareRemoteResult{}, err
 		}
-		cfg.Hetzner.ServerPath = filepath.ToSlash(filepath.Clean(value))
+		spec.ServerPath = filepath.ToSlash(filepath.Clean(value))
 		changed = true
 	}
 
-	if strings.TrimSpace(cfg.Hetzner.AppPath) == "" {
-		value, err := p.String("Remote app path", defaultHetznerAppPath(cfg.Hetzner.ServerPath, cfg.Project.Name), true)
+	if strings.TrimSpace(spec.AppPath) == "" {
+		value, err := p.String("Remote app path", defaultRemoteAppPath(spec.ServerPath, cfg.Project.Name), true)
 		if err != nil {
-			return PrepareHetznerResult{}, err
+			return PrepareRemoteResult{}, err
 		}
-		cfg.Hetzner.AppPath = filepath.ToSlash(filepath.Clean(value))
+		spec.AppPath = filepath.ToSlash(filepath.Clean(value))
 		changed = true
 	}
-	if cfg.Hetzner.ServicePort == 0 {
+	if spec.ServicePort == 0 {
 		value, err := p.Int("Remote loopback service port", cfg.Runtime.Port, true)
 		if err != nil {
-			return PrepareHetznerResult{}, err
+			return PrepareRemoteResult{}, err
 		}
-		cfg.Hetzner.ServicePort = value
+		spec.ServicePort = value
 		changed = true
 	}
 
 	databaseChanged, err := prepareDatabaseConfig(cfg, workDir, p)
 	if err != nil {
-		return PrepareHetznerResult{}, err
+		return PrepareRemoteResult{}, err
 	}
 	if databaseChanged {
 		changed = true
@@ -217,7 +236,7 @@ func PrepareHetznerConfig(cfg *config.Config, workDir string, options PrepareHet
 		var envChanged bool
 		envValues, envChanged, err = collectDeployEnvValues(cfg, workDir, p)
 		if err != nil {
-			return PrepareHetznerResult{}, err
+			return PrepareRemoteResult{}, err
 		}
 		if envChanged {
 			changed = true
@@ -225,23 +244,34 @@ func PrepareHetznerConfig(cfg *config.Config, workDir string, options PrepareHet
 		if usesSharedDatabase(cfg.Database) {
 			sharedDatabasePassword, err = promptSharedDatabasePassword(p, cfg.Database.Shared.User)
 			if err != nil {
-				return PrepareHetznerResult{}, err
+				return PrepareRemoteResult{}, err
 			}
 		}
 	}
 
-	return PrepareHetznerResult{
+	return PrepareRemoteResult{
 		Changed:                changed,
 		EnvValues:              envValues,
 		SharedDatabasePassword: sharedDatabasePassword,
 	}, nil
 }
 
-func DeployToHetzner(opts HetznerOptions) error {
-	if err := validateHetznerOptions(opts); err != nil {
+func PrepareHetznerConfig(cfg *config.Config, workDir string, options PrepareHetznerConfigOptions) (PrepareHetznerResult, error) {
+	return PrepareRemoteConfig(cfg, workDir, RemoteTargetHetzner, options)
+}
+
+func DeployToRemote(opts RemoteOptions) error {
+	return DeployToRemoteWithHooks(opts, RemoteDeployHooks{})
+}
+
+func DeployToRemoteWithHooks(opts RemoteOptions, hooks RemoteDeployHooks) error {
+	if err := validateRemoteDeployOptions(opts); err != nil {
 		return err
 	}
 
+	if hooks.OnPhase != nil {
+		hooks.OnPhase("uploadRelease")
+	}
 	bundleDir, err := prepareHetznerBundle(opts)
 	if err != nil {
 		return err
@@ -254,6 +284,9 @@ func DeployToHetzner(opts HetznerOptions) error {
 	if err := uploadHetznerBundle(opts, bundleDir); err != nil {
 		return err
 	}
+	if hooks.OnPhase != nil {
+		hooks.OnPhase("activateRelease")
+	}
 	if err := runHetznerDeployScript(opts); err != nil {
 		return err
 	}
@@ -261,28 +294,27 @@ func DeployToHetzner(opts HetznerOptions) error {
 	return nil
 }
 
-func validateHetznerOptions(opts HetznerOptions) error {
+func DeployToHetzner(opts HetznerOptions) error {
+	return DeployToRemote(opts)
+}
+
+func validateRemoteOptions(opts RemoteOptions) error {
+	prefix := providerConfigFieldPrefix(opts.Provider)
 	switch {
 	case strings.TrimSpace(opts.WorkDir) == "":
 		return fmt.Errorf("work dir is required")
-	case strings.TrimSpace(opts.ArtifactPath) == "":
-		return fmt.Errorf("artifact path is required")
-	case strings.TrimSpace(opts.RuntimeStart) == "":
-		return fmt.Errorf("runtime.start is empty in eudeploy.yaml")
-	case opts.ContainerPort <= 0:
-		return fmt.Errorf("runtime.port is empty in eudeploy.yaml")
 	case opts.ServicePort <= 0:
-		return fmt.Errorf("hetzner.service_port is required")
+		return fmt.Errorf("%s.service_port is required", prefix)
 	case strings.TrimSpace(opts.RemoteHost) == "":
-		return fmt.Errorf("hetzner.host is required")
+		return fmt.Errorf("%s.host is required", prefix)
 	case strings.TrimSpace(opts.RemoteUser) == "":
-		return fmt.Errorf("hetzner.user is required")
+		return fmt.Errorf("%s.user is required", prefix)
 	case opts.RemotePort <= 0:
-		return fmt.Errorf("hetzner.port is required")
+		return fmt.Errorf("%s.port is required", prefix)
 	case strings.TrimSpace(opts.RemoteServerPath) == "":
-		return fmt.Errorf("hetzner.server_path is required")
+		return fmt.Errorf("%s.server_path is required", prefix)
 	case strings.TrimSpace(opts.RemoteAppPath) == "":
-		return fmt.Errorf("hetzner.app_path is required")
+		return fmt.Errorf("%s.app_path is required", prefix)
 	case strings.TrimSpace(opts.Hostname) == "":
 		return fmt.Errorf("routes[0].hostname is required")
 	case strings.TrimSpace(opts.ImageTag) == "":
@@ -304,8 +336,24 @@ func validateHetznerOptions(opts HetznerOptions) error {
 	}
 }
 
-func prepareHetznerBundle(opts HetznerOptions) (string, error) {
-	bundleDir, err := os.MkdirTemp("", "eudeploy-hetzner-*")
+func validateRemoteDeployOptions(opts RemoteOptions) error {
+	if err := validateRemoteOptions(opts); err != nil {
+		return err
+	}
+	switch {
+	case strings.TrimSpace(opts.ArtifactPath) == "":
+		return fmt.Errorf("artifact path is required")
+	case strings.TrimSpace(opts.RuntimeStart) == "":
+		return fmt.Errorf("runtime.start is empty in eudeploy.yaml")
+	case opts.ContainerPort <= 0:
+		return fmt.Errorf("runtime.port is empty in eudeploy.yaml")
+	default:
+		return nil
+	}
+}
+
+func prepareHetznerBundle(opts RemoteOptions) (string, error) {
+	bundleDir, err := os.MkdirTemp("", "eudeploy-remote-*")
 	if err != nil {
 		return "", err
 	}
@@ -374,7 +422,7 @@ func prepareHetznerBundle(opts HetznerOptions) (string, error) {
 	return bundleDir, nil
 }
 
-func ensureRemoteDirectories(opts HetznerOptions) error {
+func ensureRemoteDirectories(opts RemoteOptions) error {
 	proxyRoot := sharedProxyRoot(opts.RemoteServerPath)
 	lines := []string{
 		"set -euo pipefail",
@@ -395,7 +443,7 @@ func ensureRemoteDirectories(opts HetznerOptions) error {
 	return runRemoteScript(opts, script)
 }
 
-func uploadHetznerBundle(opts HetznerOptions, bundleDir string) error {
+func uploadHetznerBundle(opts RemoteOptions, bundleDir string) error {
 	entries, err := os.ReadDir(bundleDir)
 	if err != nil {
 		return err
@@ -416,12 +464,18 @@ func uploadHetznerBundle(opts HetznerOptions, bundleDir string) error {
 	return cmd.Run()
 }
 
-func runHetznerDeployScript(opts HetznerOptions) error {
+func runHetznerDeployScript(opts RemoteOptions) error {
 	script := renderHetznerDeployScript(opts)
 	return runRemoteScript(opts, script)
 }
 
-func renderHetznerDeployScript(opts HetznerOptions) string {
+func renderHetznerDeployScript(opts RemoteOptions) string {
+	if strings.TrimSpace(opts.ReleaseID) == "" {
+		opts.ReleaseID = "release"
+	}
+	if strings.TrimSpace(opts.ArtifactSHA) == "" {
+		opts.ArtifactSHA = "unknown"
+	}
 	healthPath := normalizedHealthcheckPath(opts.HealthcheckPath)
 	proxyRoot := sharedProxyRoot(opts.RemoteServerPath)
 	proxySitesDir := filepath.ToSlash(filepath.Join(proxyRoot, "sites"))
@@ -430,6 +484,16 @@ func renderHetznerDeployScript(opts HetznerOptions) string {
 	proxyConfigPath := filepath.ToSlash(filepath.Join(proxyRoot, "config"))
 	siteConfigPath := filepath.ToSlash(filepath.Join(proxySitesDir, opts.SiteConfigName))
 	runtimeEnvPath := filepath.ToSlash(filepath.Join(opts.RemoteAppPath, "app.runtime.env"))
+	releaseDir := releaseDirPath(opts, opts.ReleaseID)
+	releasesPath := releasesRootPath(opts)
+	historyPath := releaseHistoryPath(opts)
+	activeSlotFile := activeSlotPath(opts)
+	currentReleaseFile := currentReleasePath(opts)
+	primaryPort, secondaryPort := releaseSlotPorts(opts.ServicePort)
+	imageRepo := releaseImageRepository(opts.ImageTag)
+	releaseImage := releaseImageTag(opts, opts.ReleaseID)
+	nextSiteCaddy := renderSiteCaddyfileWithUpstream(opts.Hostname, opts.RoutePath, "127.0.0.1:${TARGET_PORT}")
+	cleanup := renderReleaseCleanupCommands(opts, "history_limit")
 
 	lines := []string{
 		"set -euo pipefail",
@@ -442,8 +506,17 @@ func renderHetznerDeployScript(opts HetznerOptions) string {
 			shellQuote(sharedDockerNetwork),
 			shellQuote(sharedDockerNetwork)),
 		fmt.Sprintf("cat > %s <<'EOF'\n%sEOF", shellQuote(rootCaddyPath), renderRootCaddyfile()),
-		fmt.Sprintf("install -m 0644 site.caddy %s", shellQuote(siteConfigPath)),
 		fmt.Sprintf("cp app.env %s", shellQuote(runtimeEnvPath)),
+		fmt.Sprintf("mkdir -p %s", shellQuote(releasesPath)),
+		fmt.Sprintf("mkdir -p %s", shellQuote(releaseDir)),
+		fmt.Sprintf("cp artifact.tar.gz %s", shellQuote(filepath.ToSlash(filepath.Join(releaseDir, "artifact.tar.gz")))),
+		fmt.Sprintf("cp Dockerfile %s", shellQuote(filepath.ToSlash(filepath.Join(releaseDir, "Dockerfile")))),
+		fmt.Sprintf("cp app.env %s", shellQuote(filepath.ToSlash(filepath.Join(releaseDir, "app.env")))),
+	}
+	if opts.PostDeploy != nil && len(opts.PostDeploy.Include) > 0 {
+		lines = append(lines,
+			fmt.Sprintf("if [ -f postdeploy.tar.gz ]; then cp postdeploy.tar.gz %s; fi", shellQuote(filepath.ToSlash(filepath.Join(releaseDir, "postdeploy.tar.gz")))),
+		)
 	}
 
 	if opts.SharedDatabase != nil {
@@ -451,45 +524,82 @@ func renderHetznerDeployScript(opts HetznerOptions) string {
 	}
 
 	lines = append(lines,
-		fmt.Sprintf("docker build -t %s -f Dockerfile .", shellQuote(opts.ImageTag)),
-		fmt.Sprintf("docker rm -f %s >/dev/null 2>&1 || true", shellQuote(opts.AppContainerName)),
-		fmt.Sprintf("docker run -d --restart unless-stopped --network %s --env-file %s --name %s -p 127.0.0.1:%d:%d %s >/dev/null",
-			shellQuote(sharedDockerNetwork), shellQuote(runtimeEnvPath), shellQuote(opts.AppContainerName), opts.ServicePort, opts.ContainerPort, shellQuote(opts.ImageTag)),
+		fmt.Sprintf("IMAGE_REPO=%s", shellQuote(imageRepo)),
+		fmt.Sprintf("RELEASE_IMAGE=%s", shellQuote(releaseImage)),
+		fmt.Sprintf("PRIMARY_PORT=%d", primaryPort),
+		fmt.Sprintf("SECONDARY_PORT=%d", secondaryPort),
+		fmt.Sprintf("ACTIVE_SLOT_FILE=%s", shellQuote(activeSlotFile)),
+		fmt.Sprintf("CURRENT_RELEASE_FILE=%s", shellQuote(currentReleaseFile)),
+		fmt.Sprintf("HISTORY_FILE=%s", shellQuote(historyPath)),
+		fmt.Sprintf("APP_CONTAINER_BASE=%s", shellQuote(opts.AppContainerName)),
+		"active_slot=''",
+		`if [ -f "$ACTIVE_SLOT_FILE" ]; then active_slot="$(tr -d '\r\n' < "$ACTIVE_SLOT_FILE")"; fi`,
+		"if [ \"$active_slot\" = 'a' ]; then",
+		"  next_slot='b'",
+		"  next_port=$SECONDARY_PORT",
+		"  old_slot='a'",
+		"else",
+		"  next_slot='a'",
+		"  next_port=$PRIMARY_PORT",
+		"  old_slot='b'",
+		"fi",
+		"next_container=\"$APP_CONTAINER_BASE-$next_slot\"",
+		"old_container=\"$APP_CONTAINER_BASE-$old_slot\"",
+		"HEALTHCHECK_PATH="+shellQuote(healthPath),
+		fmt.Sprintf("cd %s", shellQuote(releaseDir)),
+		"docker build -t \"$RELEASE_IMAGE\" -f Dockerfile .",
+		"docker rm -f \"$next_container\" >/dev/null 2>&1 || true",
+		fmt.Sprintf("docker run -d --restart unless-stopped --network %s --env-file %s --name \"$next_container\" -p 127.0.0.1:${next_port}:%d \"$RELEASE_IMAGE\" >/dev/null",
+			shellQuote(sharedDockerNetwork), shellQuote(runtimeEnvPath), opts.ContainerPort),
 	)
 	if opts.PostDeploy != nil && strings.TrimSpace(opts.PostDeploy.Command) != "" {
 		lines = append(lines,
-			fmt.Sprintf("if ! docker exec %s bash -lc %s; then",
-				shellQuote(opts.AppContainerName),
-				shellQuote(opts.PostDeploy.Command)),
-			fmt.Sprintf("  docker logs %s || true", shellQuote(opts.AppContainerName)),
+			fmt.Sprintf("if ! docker exec \"$next_container\" bash -lc %s; then", shellQuote(opts.PostDeploy.Command)),
+			"  docker logs \"$next_container\" || true",
 			"  exit 1",
 			"fi",
 		)
 	}
 	lines = append(lines,
 		"attempt=0",
-		fmt.Sprintf("until docker run --rm --network host curlimages/curl:8.12.1 -fsS %s >/dev/null 2>&1; do",
-			shellQuote("http://127.0.0.1:"+strconv.Itoa(opts.ServicePort)+healthPath)),
+		"until docker run --rm --network host curlimages/curl:8.12.1 -fsS \"http://127.0.0.1:${next_port}${HEALTHCHECK_PATH}\" >/dev/null 2>&1; do",
 		"  attempt=$((attempt + 1))",
 		"  if [ \"$attempt\" -ge 30 ]; then",
-		fmt.Sprintf("    docker logs %s || true", shellQuote(opts.AppContainerName)),
+		"    docker logs \"$next_container\" || true",
 		"    exit 1",
 		"  fi",
 		"  sleep 2",
 		"done",
-		"docker pull caddy:2 >/dev/null",
-		fmt.Sprintf("docker rm -f %s >/dev/null 2>&1 || true", shellQuote(opts.ProxyContainerName)),
-		fmt.Sprintf("docker run -d --restart unless-stopped --network host --name %s -v %s:/etc/caddy/Caddyfile:ro -v %s:/etc/caddy/sites:ro -v %s:/data -v %s:/config caddy:2 >/dev/null",
+		"TARGET_PORT=\"$next_port\"",
+		fmt.Sprintf("cat > %s <<EOF\n%sEOF", shellQuote(siteConfigPath), nextSiteCaddy),
+		fmt.Sprintf("if docker ps --format '{{.Names}}' | grep -Fx -- %s >/dev/null 2>&1; then", shellQuote(opts.ProxyContainerName)),
+		fmt.Sprintf("  docker exec %s caddy reload --config /etc/caddy/Caddyfile >/dev/null", shellQuote(opts.ProxyContainerName)),
+		"else",
+		"  docker pull caddy:2 >/dev/null",
+		fmt.Sprintf("  docker rm -f %s >/dev/null 2>&1 || true", shellQuote(opts.ProxyContainerName)),
+		fmt.Sprintf("  docker run -d --restart unless-stopped --network host --name %s -v %s:/etc/caddy/Caddyfile:ro -v %s:/etc/caddy/sites:ro -v %s:/data -v %s:/config caddy:2 >/dev/null",
 			shellQuote(opts.ProxyContainerName),
 			shellQuote(rootCaddyPath),
 			shellQuote(proxySitesDir),
 			shellQuote(proxyDataPath),
 			shellQuote(proxyConfigPath)),
+		"fi",
+		"if docker ps --format '{{.Names}}' | grep -Fx -- \"$old_container\" >/dev/null 2>&1; then",
+		"  docker rm -f \"$old_container\" >/dev/null 2>&1 || true",
+		"fi",
+		"printf '%s\\n' \"$next_slot\" > \"$ACTIVE_SLOT_FILE\"",
+		fmt.Sprintf("printf '%%s\\n' %s > \"$CURRENT_RELEASE_FILE\"", shellQuote(opts.ReleaseID)),
+		fmt.Sprintf("printf '%%s\\t%%s\\t%%s\\t%%s\\t%%s\\t%%s\\n' %s \"$next_slot\" \"$next_port\" \"$RELEASE_IMAGE\" %s \"$(date -u +%%Y-%%m-%%dT%%H:%%M:%%SZ)\" >> \"$HISTORY_FILE\"",
+			shellQuote(opts.ReleaseID),
+			shellQuote(opts.ArtifactSHA)),
+		fmt.Sprintf("history_limit=%d", releaseKeepCount(opts)),
+		"if [ -f \"$HISTORY_FILE\" ]; then tail -n \"$history_limit\" \"$HISTORY_FILE\" > \"$HISTORY_FILE.tmp\" && mv \"$HISTORY_FILE.tmp\" \"$HISTORY_FILE\"; fi",
+		cleanup,
 	)
 	return strings.Join(lines, "\n")
 }
 
-func runRemoteScript(opts HetznerOptions, script string) error {
+func runRemoteScript(opts RemoteOptions, script string) error {
 	args := buildSSHArgs(opts, false)
 	args = append(args, fmt.Sprintf("%s@%s", opts.RemoteUser, opts.RemoteHost), "bash -se")
 
@@ -592,8 +702,13 @@ func renderSharedDatabaseSQL(opts SharedDatabaseOptions) string {
 }
 
 func renderSiteCaddyfile(hostname, routePath string, servicePort int) string {
+	return renderSiteCaddyfileWithUpstream(hostname, routePath, fmt.Sprintf("127.0.0.1:%d", servicePort))
+}
+
+func renderSiteCaddyfileWithUpstream(hostname, routePath, upstream string) string {
 	hostname = strings.TrimSpace(hostname)
 	routePath = normalizeRoutePath(routePath)
+	upstream = strings.TrimSpace(upstream)
 
 	lines := []string{
 		fmt.Sprintf("%s {", hostname),
@@ -601,11 +716,11 @@ func renderSiteCaddyfile(hostname, routePath string, servicePort int) string {
 	}
 
 	if routePath == "/" {
-		lines = append(lines, fmt.Sprintf("  reverse_proxy 127.0.0.1:%d", servicePort))
+		lines = append(lines, fmt.Sprintf("  reverse_proxy %s", upstream))
 	} else {
 		lines = append(lines,
 			fmt.Sprintf("  handle_path %s* {", routePath),
-			fmt.Sprintf("    reverse_proxy 127.0.0.1:%d", servicePort),
+			fmt.Sprintf("    reverse_proxy %s", upstream),
 			"  }",
 			"  respond 404",
 		)
@@ -617,6 +732,36 @@ func renderSiteCaddyfile(hostname, routePath string, servicePort int) string {
 
 func renderRootCaddyfile() string {
 	return "import /etc/caddy/sites/*.caddy\n"
+}
+
+func renderReleaseCleanupCommands(opts RemoteOptions, historyLimitVar string) string {
+	releasesPath := releasesRootPath(opts)
+	historyPath := releaseHistoryPath(opts)
+	imageRepo := releaseImageRepository(opts.ImageTag)
+
+	lines := []string{
+		"keep_ids=''",
+		fmt.Sprintf("if [ -f %s ]; then", shellQuote(historyPath)),
+		fmt.Sprintf("  keep_ids=\"$(awk -F '\\t' '{print $1}' %s | tr '\\n' ' ')\"", shellQuote(historyPath)),
+		"fi",
+		fmt.Sprintf("if [ -d %s ]; then", shellQuote(releasesPath)),
+		fmt.Sprintf("  find %s -mindepth 1 -maxdepth 1 -type d | while read -r dir; do", shellQuote(releasesPath)),
+		"    id=\"$(basename \"$dir\")\"",
+		"    case \" $keep_ids \" in",
+		"      *\" $id \"*) ;;",
+		"      *) rm -rf \"$dir\" ;;",
+		"    esac",
+		"  done",
+		"fi",
+		fmt.Sprintf("docker images --format '{{.Repository}}:{{.Tag}}' | grep -F %s | while read -r image; do", shellQuote(imageRepo+":")),
+		"  tag=\"${image##*:}\"",
+		"  case \" $keep_ids latest remote \" in",
+		"    *\" $tag \"*) ;;",
+		"    *) docker image rm -f \"$image\" >/dev/null 2>&1 || true ;;",
+		"  esac",
+		"done || true",
+	}
+	return strings.Join(lines, "\n")
 }
 
 func renderEnvFile(values map[string]string) (string, error) {
@@ -928,33 +1073,45 @@ func defaultSSHKeyPath() string {
 	return ""
 }
 
-func defaultHetznerServerPath(user string) string {
+func defaultRemoteServerPath(user string) string {
 	if strings.TrimSpace(user) == "" || strings.TrimSpace(user) == "root" {
 		return filepath.ToSlash(filepath.Join("/opt", "eu-deploy"))
 	}
 	return filepath.ToSlash(filepath.Join("/home", user, "eu-deploy"))
 }
 
-func defaultHetznerAppPath(serverPath, projectName string) string {
+func defaultRemoteAppPath(serverPath, projectName string) string {
 	safeProject := SanitizeDockerName(projectName)
 	if safeProject == "" {
 		safeProject = "app"
 	}
 	root := strings.TrimSpace(serverPath)
 	if root == "" {
-		root = defaultHetznerServerPath("root")
+		root = defaultRemoteServerPath("root")
 	}
 	return filepath.ToSlash(filepath.Join(root, "apps", safeProject))
 }
 
-func effectiveHetznerServerPath(spec config.HetznerSpec, projectName string) string {
+func effectiveRemoteServerPath(spec config.RemoteProviderSpec, projectName string) string {
 	if strings.TrimSpace(spec.ServerPath) != "" {
 		return filepath.ToSlash(filepath.Clean(spec.ServerPath))
 	}
 	if strings.TrimSpace(spec.AppPath) != "" {
 		return filepath.ToSlash(filepath.Clean(filepath.Dir(spec.AppPath)))
 	}
-	return defaultHetznerServerPath(spec.User)
+	return defaultRemoteServerPath(spec.User)
+}
+
+func defaultHetznerServerPath(user string) string {
+	return defaultRemoteServerPath(user)
+}
+
+func defaultHetznerAppPath(serverPath, projectName string) string {
+	return defaultRemoteAppPath(serverPath, projectName)
+}
+
+func effectiveHetznerServerPath(spec config.HetznerSpec, projectName string) string {
+	return effectiveRemoteServerPath(spec.RemoteProviderSpec, projectName)
 }
 
 func SharedProxyContainerName() string {

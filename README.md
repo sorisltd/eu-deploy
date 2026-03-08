@@ -7,11 +7,11 @@ Licensed under Apache-2.0. See LICENSE and NOTICE.
 `eu-deploy` is currently a small Go CLI for Node/npm web apps.
 
 - `eu init` generates an `eudeploy.yaml` file with Node-oriented defaults.
-- `eu deploy --target hetzner` prompts for missing server details, can seed env keys from `.env.example`, and saves the non-secret answers back to `eudeploy.yaml`.
+- `eu deploy --target <provider>` prompts for missing server details, can seed env keys from `.env.example`, and saves the non-secret answers back to `eudeploy.yaml`.
 - `eu preflight` checks SSH, Docker, DNS, remote paths, ports, and TLS prerequisites before you deploy.
-- `eu bootstrap` prepares a fresh Hetzner VM with Docker and the directory layout that `eu-deploy` expects.
+- `eu bootstrap` prepares a fresh SSH-reachable VM with Docker and the directory layout that `eu-deploy` expects.
 - `eu build` runs the configured build command and packages the configured output folder.
-- `eu deploy` supports local Docker and a single-VM Hetzner SSH deploy for `runtime.type: web`, including an optional post-deploy command inside the app container.
+- `eu deploy` supports local Docker plus single-VM SSH deploys for `runtime.type: web` on Hetzner, Scaleway, and OVH, including shared PostgreSQL, release history, rollback, and an optional post-deploy command inside the app container.
 
 The checked-in sample config lives at `templates/node-web.yaml`. This repository itself is the CLI, not a deployable Node app.
 
@@ -26,16 +26,35 @@ The checked-in sample config lives at `templates/node-web.yaml`. This repository
 - Run this when you want to verify the artifact locally before deployment.
 
 `eu bootstrap`
-- Connects to a Hetzner VM over SSH and prepares it for `eu-deploy`.
+- Connects to the configured remote VM over SSH and prepares it for `eu-deploy`.
 - Use this first on a fresh server. It can install Docker, create the expected directories, optionally configure UFW and fail2ban, and start a shared PostgreSQL container when `database.mode: shared` is configured.
 
 `eu preflight`
-- Checks whether the configured Hetzner VM looks ready for deployment.
+- Checks whether the configured remote VM looks ready for deployment.
 - Use this before the first deploy and whenever DNS, SSH, ports, or Docker may have changed.
 
 `eu deploy`
 - `eu deploy` uses local Docker by default.
-- `eu deploy --target hetzner` builds the app if needed, uploads the artifact, starts or updates the app container, refreshes the shared Caddy proxy config on the server, can provision one PostgreSQL database/user per app on the same VM, and can run a configured post-deploy command for migrations/setup.
+- `eu deploy --target hetzner|scaleway|ovh` builds the app if needed, uploads the artifact, starts or updates the app container, reloads the shared Caddy proxy config on the server, can provision one PostgreSQL database/user per app on the same VM, can run a configured post-deploy command for migrations/setup, and keeps the last three release images for rollback.
+- Add `--json` to emit a single machine-readable result object instead of human-oriented text. In JSON mode, the command does not prompt for missing config values.
+- The JSON payload includes an ordered `phases` array with stable IDs so a UI can map deploy progress and failures consistently.
+
+`eu logs`
+- Streams remote Docker logs for the active app container, the shared proxy, or the shared PostgreSQL container.
+- Add `--json` to emit newline-delimited JSON log events (`stdout` / `stderr`) instead of plain text.
+
+`eu releases`
+- Lists remote release history, newest first.
+- Add `--json` to emit a machine-readable release list with stable field names and a `current` marker.
+
+`eu destroy`
+- Removes the remote app deployment, deletes its site proxy snippet, and can optionally drop the app database and role when shared PostgreSQL is enabled.
+- Add `--json` for a machine-readable result object.
+
+`eu rollback`
+- Re-activates the previous distinct remote release, or a specific release ID that is still present in remote history.
+- Rollback does not revert database schema changes automatically.
+- Add `--json` for a machine-readable result object.
 
 ## Typical usage
 
@@ -47,7 +66,23 @@ Local Docker:
 ./eu deploy
 ```
 
-First deploy to a new Hetzner VM:
+Machine-readable examples:
+
+```bash
+./eu build --json
+./eu preflight --target hetzner --json
+./eu deploy --target hetzner --json
+./eu logs --target hetzner --component app --json
+./eu releases --target hetzner --json
+./eu rollback --target hetzner --json
+./eu destroy --target hetzner --json
+```
+
+- `build`, `bootstrap`, `preflight`, `deploy`, `releases`, `destroy`, and `rollback` emit one JSON object.
+- `logs --json` emits one JSON object per log line so a UI can stream it.
+- `deploy --json` includes ordered `phases` entries with `id`, `label`, and `status`.
+
+First deploy to a new remote VM:
 
 ```bash
 ./eu init
@@ -57,7 +92,7 @@ First deploy to a new Hetzner VM:
 ./eu deploy --target hetzner
 ```
 
-Repeat deploy to an existing Hetzner VM:
+Repeat deploy to an existing VM:
 
 ```bash
 ./eu preflight
@@ -86,7 +121,7 @@ database:
 ```
 
 - `eu bootstrap` starts one shared `eu-shared-postgres` container on `127.0.0.1:5432`.
-- `eu deploy --target hetzner` creates or updates the app-specific PostgreSQL role and database and injects `DATABASE_URL` into the app container automatically.
+- `eu deploy --target hetzner|scaleway|ovh` creates or updates the app-specific PostgreSQL role and database and injects `DATABASE_URL` into the app container automatically.
 - You can make `eu-deploy` run migrations or setup scripts automatically by adding a `deploy.post_deploy` command and any extra files that command needs:
 
 ```yaml
@@ -134,7 +169,7 @@ Optional live Docker smoke test for the standalone Next.js path:
 EUDEPLOY_DOCKER_E2E=1 go test ./internal/deploy -run TestNextStandaloneDockerE2E -count=1
 ```
 
-## Hetzner deploy
+## Remote deploy
 
 Prerequisites:
 - A Linux VM reachable over SSH
@@ -151,7 +186,7 @@ Run:
 
 On the first Hetzner workflow, the CLI will prompt for:
 - public hostname
-- Hetzner server host/IP
+- provider server host/IP
 - SSH user, port, and optional key path
 - remote server root, app path, and loopback service port
 - deploy env values for keys found in `env.*` or seeded from `.env.example`
@@ -162,7 +197,7 @@ When `database.mode: shared` is enabled, `eu bootstrap` also creates the shared 
 
 `eu preflight` verifies:
 - local `ssh` and `scp`
-- the Hetzner server address resolves
+- the remote server address resolves
 - your hostname resolves and whether it matches the server IP
 - SSH connectivity
 - remote Docker CLI and daemon access
@@ -171,13 +206,30 @@ When `database.mode: shared` is enabled, `eu bootstrap` also creates the shared 
 - whether the app's loopback `service_port` is free
 - when `database.mode: shared` is enabled, whether the shared Docker network exists and whether PostgreSQL is already running or port `5432` is blocked by something else
 
-The Hetzner target uploads the build artifact, generates a remote Docker image, runs the app on `127.0.0.1:<service_port>`, and updates a shared Caddy container on the server. That shared proxy model is what allows multiple small websites to coexist on one VM:
+The remote targets upload the build artifact, generate a remote Docker image, run the app on `127.0.0.1:<service_port>` and `127.0.0.1:<service_port+1>`, and reload a shared Caddy container on the server. That shared proxy model is what allows multiple small websites to coexist on one VM:
 
 - one Caddy container owns ports `80/443`
-- each app runs in its own Docker container on a different loopback port
+- each app deploy uses two loopback ports for blue/green style cutover
 - each deploy writes one per-site Caddy snippet keyed by hostname
+- each deploy keeps the last three release images and a small release history for rollback
 - optional: one shared PostgreSQL container serves multiple apps, each with its own database and role
 - optional: a post-deploy hook can run inside the app container before deploy healthcheck succeeds
+
+Operational commands:
+
+```bash
+./eu logs --target hetzner --component app
+./eu releases --target hetzner
+./eu destroy --target hetzner
+./eu destroy --target hetzner --drop-database
+./eu rollback --target hetzner
+./eu rollback --target hetzner --to 20260308-101530-deadbeef1234
+```
+
+The SSH provider logic is shared across:
+- `--target hetzner`
+- `--target scaleway`
+- `--target ovh`
 
 Example multi-site layout:
 
