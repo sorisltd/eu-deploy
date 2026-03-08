@@ -513,6 +513,12 @@ func renderHetznerDeployScript(opts RemoteOptions) string {
 		fmt.Sprintf("cp Dockerfile %s", shellQuote(filepath.ToSlash(filepath.Join(releaseDir, "Dockerfile")))),
 		fmt.Sprintf("cp app.env %s", shellQuote(filepath.ToSlash(filepath.Join(releaseDir, "app.env")))),
 	}
+	if opts.InstallDependencies {
+		lines = append(lines,
+			fmt.Sprintf("if [ -f package.json ]; then cp package.json %s; fi", shellQuote(filepath.ToSlash(filepath.Join(releaseDir, "package.json")))),
+			fmt.Sprintf("if [ -f package-lock.json ]; then cp package-lock.json %s; fi", shellQuote(filepath.ToSlash(filepath.Join(releaseDir, "package-lock.json")))),
+		)
+	}
 	if opts.PostDeploy != nil && len(opts.PostDeploy.Include) > 0 {
 		lines = append(lines,
 			fmt.Sprintf("if [ -f postdeploy.tar.gz ]; then cp postdeploy.tar.gz %s; fi", shellQuote(filepath.ToSlash(filepath.Join(releaseDir, "postdeploy.tar.gz")))),
@@ -534,6 +540,16 @@ func renderHetznerDeployScript(opts RemoteOptions) string {
 		fmt.Sprintf("APP_CONTAINER_BASE=%s", shellQuote(opts.AppContainerName)),
 		"active_slot=''",
 		`if [ -f "$ACTIVE_SLOT_FILE" ]; then active_slot="$(tr -d '\r\n' < "$ACTIVE_SLOT_FILE")"; fi`,
+		`legacy_container="$APP_CONTAINER_BASE"`,
+		`if [ -z "$active_slot" ] && docker ps --format '{{.Names}}' | grep -Fx -- "${APP_CONTAINER_BASE}-a" >/dev/null 2>&1; then`,
+		`  active_slot='a'`,
+		"fi",
+		`if [ -z "$active_slot" ] && docker ps --format '{{.Names}}' | grep -Fx -- "${APP_CONTAINER_BASE}-b" >/dev/null 2>&1; then`,
+		`  active_slot='b'`,
+		"fi",
+		`if [ -z "$active_slot" ] && docker ps --format '{{.Names}}' | grep -Fx -- "$legacy_container" >/dev/null 2>&1; then`,
+		`  active_slot='a'`,
+		"fi",
 		"if [ \"$active_slot\" = 'a' ]; then",
 		"  next_slot='b'",
 		"  next_port=$SECONDARY_PORT",
@@ -586,6 +602,9 @@ func renderHetznerDeployScript(opts RemoteOptions) string {
 		"fi",
 		"if docker ps --format '{{.Names}}' | grep -Fx -- \"$old_container\" >/dev/null 2>&1; then",
 		"  docker rm -f \"$old_container\" >/dev/null 2>&1 || true",
+		"fi",
+		"if docker ps --format '{{.Names}}' | grep -Fx -- \"$legacy_container\" >/dev/null 2>&1; then",
+		"  docker rm -f \"$legacy_container\" >/dev/null 2>&1 || true",
 		"fi",
 		"printf '%s\\n' \"$next_slot\" > \"$ACTIVE_SLOT_FILE\"",
 		fmt.Sprintf("printf '%%s\\n' %s > \"$CURRENT_RELEASE_FILE\"", shellQuote(opts.ReleaseID)),

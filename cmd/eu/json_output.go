@@ -35,9 +35,22 @@ func addJSONFlag(cmd *cobra.Command) {
 	cmd.Flags().Bool("json", false, "Emit machine-readable JSON")
 }
 
+func addNoPromptFlag(cmd *cobra.Command) {
+	cmd.Flags().Bool("no-prompt", false, "Use existing config and environment overrides without interactive prompts")
+}
+
 func commandJSONEnabled(cmd *cobra.Command) bool {
 	enabled, err := cmd.Flags().GetBool("json")
 	return err == nil && enabled
+}
+
+func commandNoPrompt(cmd *cobra.Command) bool {
+	enabled, err := cmd.Flags().GetBool("no-prompt")
+	return err == nil && enabled
+}
+
+func commandShouldPrompt(cmd *cobra.Command) bool {
+	return !commandJSONEnabled(cmd) && !commandNoPrompt(cmd)
 }
 
 func emitJSONSuccess(cmd *cobra.Command, target string, data any) error {

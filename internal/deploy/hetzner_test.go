@@ -134,6 +134,70 @@ func TestRenderHetznerDeployScriptRunsPostDeployCommand(t *testing.T) {
 	}
 }
 
+func TestRenderHetznerDeployScriptCopiesPackageMetadataIntoReleaseDir(t *testing.T) {
+	got := renderHetznerDeployScript(HetznerOptions{
+		RemoteServerPath:    "/opt/eu-deploy",
+		RemoteAppPath:       "/opt/eu-deploy/apps/massage",
+		RemoteHost:          "example.com",
+		RemoteUser:          "root",
+		RemotePort:          22,
+		RuntimeStart:        "npm run start",
+		ContainerPort:       3000,
+		ServicePort:         3001,
+		ImageTag:            "eu-deploy-massage:remote",
+		ReleaseID:           "release-123",
+		AppContainerName:    "eu-massage-app",
+		ProxyContainerName:  "eu-shared-caddy",
+		Hostname:            "massage.example.com",
+		RoutePath:           "/",
+		HealthcheckPath:     "/",
+		SiteConfigName:      "massage.example.com.caddy",
+		InstallDependencies: true,
+	})
+
+	for _, expected := range []string{
+		`if [ -f package.json ]; then cp package.json '/opt/eu-deploy/apps/massage/releases/release-123/package.json'; fi`,
+		`if [ -f package-lock.json ]; then cp package-lock.json '/opt/eu-deploy/apps/massage/releases/release-123/package-lock.json'; fi`,
+	} {
+		if !strings.Contains(got, expected) {
+			t.Fatalf("deploy script missing %q:\n%s", expected, got)
+		}
+	}
+}
+
+func TestRenderHetznerDeployScriptMigratesLegacySingleContainer(t *testing.T) {
+	got := renderHetznerDeployScript(HetznerOptions{
+		RemoteServerPath:    "/opt/eu-deploy",
+		RemoteAppPath:       "/opt/eu-deploy/apps/massage",
+		RemoteHost:          "example.com",
+		RemoteUser:          "root",
+		RemotePort:          22,
+		RuntimeStart:        "npm run start",
+		ContainerPort:       3000,
+		ServicePort:         3001,
+		ImageTag:            "eu-deploy-massage:remote",
+		ReleaseID:           "release-123",
+		AppContainerName:    "eu-massage-app",
+		ProxyContainerName:  "eu-shared-caddy",
+		Hostname:            "massage.example.com",
+		RoutePath:           "/",
+		HealthcheckPath:     "/",
+		SiteConfigName:      "massage.example.com.caddy",
+		InstallDependencies: true,
+	})
+
+	for _, expected := range []string{
+		`legacy_container="$APP_CONTAINER_BASE"`,
+		`if [ -z "$active_slot" ] && docker ps --format '{{.Names}}' | grep -Fx -- "$legacy_container" >/dev/null 2>&1; then`,
+		`  active_slot='a'`,
+		`  docker rm -f "$legacy_container" >/dev/null 2>&1 || true`,
+	} {
+		if !strings.Contains(got, expected) {
+			t.Fatalf("deploy script missing %q:\n%s", expected, got)
+		}
+	}
+}
+
 func TestInterpretSharedProxyCheck(t *testing.T) {
 	if got := interpretSharedProxyCheck("proxy"); got.Status != PreflightOK {
 		t.Fatalf("expected OK for proxy status, got %s", got.Status)

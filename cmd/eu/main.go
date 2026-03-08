@@ -141,8 +141,6 @@ func main() {
 			if err != nil {
 				return err
 			}
-			jsonMode := commandJSONEnabled(cmd)
-
 			requestedTarget, err := cmd.Flags().GetString("target")
 			if err != nil {
 				return err
@@ -170,9 +168,10 @@ func main() {
 					return err
 				}
 				prepared := deploy.PrepareRemoteResult{
-					EnvValues: existingDeployEnvValues(cfg),
+					EnvValues:              existingDeployEnvValues(cfg),
+					SharedDatabasePassword: resolveSharedDatabasePassword(remoteTarget),
 				}
-				if !jsonMode {
+				if commandShouldPrompt(cmd) {
 					prepared, err = deploy.PrepareRemoteConfig(&cfg, wd, remoteTarget, deploy.PrepareRemoteConfigOptions{
 						PromptEnv: true,
 					})
@@ -197,12 +196,12 @@ func main() {
 	deployCmd.Flags().Bool("detach", false, "Run container in background")
 	deployCmd.Flags().String("name", "", "Container name (default: eu-<project>)")
 	addJSONFlag(deployCmd)
+	addNoPromptFlag(deployCmd)
 
 	preflightCmd := &cobra.Command{
 		Use:   "preflight",
 		Short: "Check whether a remote SSH provider VM is ready for deployment",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			jsonMode := commandJSONEnabled(cmd)
 			requestedTarget, err := cmd.Flags().GetString("target")
 			if err != nil {
 				return err
@@ -223,7 +222,7 @@ func main() {
 			if err != nil {
 				return err
 			}
-			if !jsonMode {
+			if commandShouldPrompt(cmd) {
 				prepared, err := deploy.PrepareRemoteConfig(&cfg, wd, remoteTarget, deploy.PrepareRemoteConfigOptions{})
 				if err != nil {
 					return err
@@ -241,6 +240,7 @@ func main() {
 	}
 	preflightCmd.Flags().String("target", "", "Preflight target (hetzner|scaleway|ovh)")
 	addJSONFlag(preflightCmd)
+	addNoPromptFlag(preflightCmd)
 
 	bootstrapCmd := &cobra.Command{
 		Use:   "bootstrap",
@@ -269,7 +269,7 @@ func main() {
 				return err
 			}
 			var opts deploy.HetznerBootstrapOptions
-			if jsonMode {
+			if jsonMode || commandNoPrompt(cmd) {
 				opts, err = buildBootstrapOptions(cfg, remoteTarget)
 			} else {
 				prepared, err := deploy.PrepareRemoteConfig(&cfg, wd, remoteTarget, deploy.PrepareRemoteConfigOptions{})
@@ -315,6 +315,7 @@ func main() {
 	}
 	bootstrapCmd.Flags().String("target", "", "Bootstrap target (hetzner|scaleway|ovh)")
 	addJSONFlag(bootstrapCmd)
+	addNoPromptFlag(bootstrapCmd)
 
 	logsCmd := &cobra.Command{
 		Use:   "logs",
@@ -337,7 +338,7 @@ func main() {
 			if err != nil {
 				return err
 			}
-			if !jsonMode {
+			if commandShouldPrompt(cmd) {
 				prepared, err := deploy.PrepareRemoteConfig(&cfg, wd, remoteTarget, deploy.PrepareRemoteConfigOptions{})
 				if err != nil {
 					return err
@@ -378,6 +379,7 @@ func main() {
 	logsCmd.Flags().Bool("follow", true, "Follow log output")
 	logsCmd.Flags().Int("tail", 200, "Number of log lines to show before streaming")
 	addJSONFlag(logsCmd)
+	addNoPromptFlag(logsCmd)
 
 	releasesCmd := &cobra.Command{
 		Use:   "releases",
@@ -400,7 +402,7 @@ func main() {
 			if err != nil {
 				return err
 			}
-			if !jsonMode {
+			if commandShouldPrompt(cmd) {
 				prepared, err := deploy.PrepareRemoteConfig(&cfg, wd, remoteTarget, deploy.PrepareRemoteConfigOptions{})
 				if err != nil {
 					return err
@@ -466,6 +468,7 @@ func main() {
 	releasesCmd.Flags().String("target", "", "Release history target (hetzner|scaleway|ovh)")
 	releasesCmd.Flags().Int("limit", 0, "Limit the number of releases shown")
 	addJSONFlag(releasesCmd)
+	addNoPromptFlag(releasesCmd)
 
 	destroyCmd := &cobra.Command{
 		Use:   "destroy",
@@ -488,7 +491,7 @@ func main() {
 			if err != nil {
 				return err
 			}
-			if !jsonMode {
+			if commandShouldPrompt(cmd) {
 				prepared, err := deploy.PrepareRemoteConfig(&cfg, wd, remoteTarget, deploy.PrepareRemoteConfigOptions{})
 				if err != nil {
 					return err
@@ -524,6 +527,7 @@ func main() {
 	destroyCmd.Flags().String("target", "", "Destroy target (hetzner|scaleway|ovh)")
 	destroyCmd.Flags().Bool("drop-database", false, "Also drop the app database and role when using shared PostgreSQL")
 	addJSONFlag(destroyCmd)
+	addNoPromptFlag(destroyCmd)
 
 	rollbackCmd := &cobra.Command{
 		Use:   "rollback",
@@ -546,7 +550,7 @@ func main() {
 			if err != nil {
 				return err
 			}
-			if !jsonMode {
+			if commandShouldPrompt(cmd) {
 				prepared, err := deploy.PrepareRemoteConfig(&cfg, wd, remoteTarget, deploy.PrepareRemoteConfigOptions{})
 				if err != nil {
 					return err
@@ -586,6 +590,7 @@ func main() {
 	rollbackCmd.Flags().String("target", "", "Rollback target (hetzner|scaleway|ovh)")
 	rollbackCmd.Flags().String("to", "", "Specific release ID to activate instead of the previous distinct release")
 	addJSONFlag(rollbackCmd)
+	addNoPromptFlag(rollbackCmd)
 
 	rootCmd.AddCommand(initCmd, buildCmd, deployCmd, preflightCmd, bootstrapCmd, logsCmd, releasesCmd, destroyCmd, rollbackCmd)
 
@@ -855,7 +860,7 @@ func runRemotePreflight(cmd *cobra.Command, cfg config.Config, wd string, target
 }
 
 func buildRemoteOptions(cfg config.Config, wd string, target deploy.RemoteTarget, artifactSHA, sharedDatabasePassword string) (deploy.RemoteOptions, error) {
-	spec, ok := deploy.RemoteProviderSpecForTarget(cfg, target)
+	spec, ok := resolveRemoteProviderSpec(cfg, target)
 	if !ok || spec == nil {
 		return deploy.RemoteOptions{}, fmt.Errorf("%s config is missing", target)
 	}
@@ -878,7 +883,7 @@ func buildRemoteOptions(cfg config.Config, wd string, target deploy.RemoteTarget
 		SSHKeyPath:         spec.SSHKeyPath,
 		RemoteServerPath:   spec.ServerPath,
 		RemoteAppPath:      spec.AppPath,
-		Hostname:           cfg.Routes[0].Hostname,
+		Hostname:           resolveRouteHostname(cfg),
 		RoutePath:          cfg.Routes[0].Path,
 		HealthcheckPath:    cfg.Runtime.Healthcheck.Path,
 		SiteConfigName:     deploy.BuildHetznerSiteConfigName(cfg.Routes[0].Hostname),
@@ -933,7 +938,7 @@ func existingDeployEnvValues(cfg config.Config) map[string]string {
 	generatedDatabaseURL := cfg.Database != nil && strings.TrimSpace(cfg.Database.Mode) == "shared"
 
 	for key, value := range cfg.Env.Public {
-		value = strings.TrimSpace(value)
+		value = resolveConfigEnvValue(key, value)
 		if value != "" {
 			values[key] = value
 		}
@@ -942,7 +947,7 @@ func existingDeployEnvValues(cfg config.Config) map[string]string {
 		if generatedDatabaseURL && key == "DATABASE_URL" {
 			continue
 		}
-		value = strings.TrimSpace(value)
+		value = resolveConfigEnvValue(key, value)
 		if value != "" {
 			values[key] = value
 		}
@@ -951,7 +956,7 @@ func existingDeployEnvValues(cfg config.Config) map[string]string {
 }
 
 func buildBootstrapOptions(cfg config.Config, target deploy.RemoteTarget) (deploy.HetznerBootstrapOptions, error) {
-	spec, ok := deploy.RemoteProviderSpecForTarget(cfg, target)
+	spec, ok := resolveRemoteProviderSpec(cfg, target)
 	if !ok || spec == nil {
 		return deploy.HetznerBootstrapOptions{}, fmt.Errorf("%s config is missing", target)
 	}
