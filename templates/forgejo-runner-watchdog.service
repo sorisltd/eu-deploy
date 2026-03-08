@@ -1,0 +1,9 @@
+[Unit]
+Description=Heal a stuck Forgejo Actions runner
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/default/forgejo-runner-watchdog
+ExecStart=/usr/local/bin/forgejo-runner-watchdog

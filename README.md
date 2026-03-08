@@ -215,6 +215,36 @@ The remote targets upload the build artifact, generate a remote Docker image, ru
 - optional: one shared PostgreSQL container serves multiple apps, each with its own database and role
 - optional: a post-deploy hook can run inside the app container before deploy healthcheck succeeds
 
+## Forgejo Actions
+
+For a Vercel-style flow, use:
+
+- IDE -> Forgejo
+- Forgejo Actions runner -> `eu deploy --target <provider> --no-prompt`
+- remote VM -> internet
+
+The runner can inject non-interactive deploy values from environment variables such as:
+
+- `EUDEPLOY_HETZNER_HOST`
+- `EUDEPLOY_HETZNER_USER`
+- `EUDEPLOY_HETZNER_PORT`
+- `EUDEPLOY_HETZNER_SSH_KEY_PATH`
+- `EUDEPLOY_HETZNER_SERVER_PATH`
+- `EUDEPLOY_HETZNER_APP_PATH`
+- `EUDEPLOY_HETZNER_SERVICE_PORT`
+- `EUDEPLOY_ROUTE_HOSTNAME`
+- `EUDEPLOY_ENV_JWT_SECRET`
+- `EUDEPLOY_ENV_ADMIN_EMAIL`
+- `EUDEPLOY_ENV_ADMIN_PASSWORD`
+
+If your Forgejo runner ever leaves queued jobs unassigned after a failed workflow, install the included watchdog templates:
+
+- `scripts/forgejo_runner_watchdog.py`
+- `templates/forgejo-runner-watchdog.service`
+- `templates/forgejo-runner-watchdog.timer`
+
+The watchdog checks for stale queued jobs with no assigned task and restarts the runner automatically.
+
 Operational commands:
 
 ```bash

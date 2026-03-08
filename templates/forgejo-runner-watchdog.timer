@@ -1,0 +1,11 @@
+[Unit]
+Description=Check Forgejo Actions runner health every minute
+
+[Timer]
+OnBootSec=2m
+OnUnitActiveSec=1m
+AccuracySec=15s
+Unit=forgejo-runner-watchdog.service
+
+[Install]
+WantedBy=timers.target
