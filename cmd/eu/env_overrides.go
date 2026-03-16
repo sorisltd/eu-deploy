@@ -84,6 +84,37 @@ func resolveRouteHostname(cfg config.Config) string {
 	return cfg.Routes[0].Hostname
 }
 
+func resolveRouteHostnames(cfg config.Config) []string {
+	if value := firstNonEmptyEnv("EUDEPLOY_ROUTE_HOSTNAME", "EUDEPLOY_HOSTNAME"); value != "" {
+		return []string{value}
+	}
+	if len(cfg.Routes) == 0 {
+		return nil
+	}
+
+	primaryPath := strings.TrimSpace(cfg.Routes[0].Path)
+	primaryTarget := strings.TrimSpace(cfg.Routes[0].Target)
+	seen := map[string]struct{}{}
+	hostnames := make([]string, 0, len(cfg.Routes))
+
+	for _, route := range cfg.Routes {
+		if strings.TrimSpace(route.Path) != primaryPath || strings.TrimSpace(route.Target) != primaryTarget {
+			continue
+		}
+		hostname := strings.TrimSpace(route.Hostname)
+		if hostname == "" {
+			continue
+		}
+		if _, ok := seen[hostname]; ok {
+			continue
+		}
+		seen[hostname] = struct{}{}
+		hostnames = append(hostnames, hostname)
+	}
+
+	return hostnames
+}
+
 func resolveConfigEnvValue(key, configured string) string {
 	if value := firstNonEmptyEnv("EUDEPLOY_ENV_"+strings.ToUpper(key), key); value != "" {
 		return value

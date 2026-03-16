@@ -21,6 +21,7 @@ type DockerOptions struct {
 	ContainerName       string
 	Detach              bool
 	InstallDependencies bool
+	Packages            []string
 }
 
 func SanitizeDockerName(name string) string {
@@ -155,6 +156,7 @@ func dockerfileContents(opts DockerOptions) string {
 
 	lines := []string{
 		"FROM node:20-slim",
+		dockerfilePackagesStep(opts.Packages),
 		"WORKDIR /app",
 		"ENV NODE_ENV=production",
 		dockerfileInstallStep(opts.InstallDependencies),
@@ -169,6 +171,13 @@ func dockerfileContents(opts DockerOptions) string {
 		"",
 	)
 	return strings.Join(lines, "\n")
+}
+
+func dockerfilePackagesStep(packages []string) string {
+	if len(packages) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("RUN apt-get update -qq && apt-get install -y --no-install-recommends %s && rm -rf /var/lib/apt/lists/*", strings.Join(packages, " "))
 }
 
 func dockerfileInstallStep(installDependencies bool) string {

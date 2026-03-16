@@ -44,6 +44,7 @@ type RemoteOptions struct {
 	RemoteServerPath    string
 	RemoteAppPath       string
 	Hostname            string
+	Hostnames           []string
 	RoutePath           string
 	HealthcheckPath     string
 	SiteConfigName      string
@@ -51,6 +52,8 @@ type RemoteOptions struct {
 	PostDeploy          *PostDeployOptions
 	Env                 map[string]string
 	KeepReleases        int
+	Packages            []string
+	Volumes             []string
 }
 
 type HetznerOptions = RemoteOptions
@@ -378,6 +381,7 @@ func prepareHetznerBundle(opts RemoteOptions) (string, error) {
 		RuntimeStart:        opts.RuntimeStart,
 		ContainerPort:       opts.ContainerPort,
 		InstallDependencies: opts.InstallDependencies,
+		Packages:            opts.Packages,
 	}
 	if opts.PostDeploy != nil && len(opts.PostDeploy.Include) > 0 {
 		postDeployArchivePath := filepath.Join(bundleDir, "postdeploy.tar.gz")
@@ -392,7 +396,7 @@ func prepareHetznerBundle(opts RemoteOptions) (string, error) {
 		return "", err
 	}
 
-	siteCaddy := renderSiteCaddyfile(opts.Hostname, opts.RoutePath, opts.ServicePort)
+	siteCaddy := renderSiteCaddyfile(opts.Hostnames, opts.RoutePath, opts.ServicePort)
 	if err := os.WriteFile(filepath.Join(bundleDir, "site.caddy"), []byte(siteCaddy), 0o644); err != nil {
 		os.RemoveAll(bundleDir)
 		return "", err
@@ -492,7 +496,7 @@ func renderHetznerDeployScript(opts RemoteOptions) string {
 	primaryPort, secondaryPort := releaseSlotPorts(opts.ServicePort)
 	imageRepo := releaseImageRepository(opts.ImageTag)
 	releaseImage := releaseImageTag(opts, opts.ReleaseID)
-	nextSiteCaddy := renderSiteCaddyfileWithUpstream(opts.Hostname, opts.RoutePath, "127.0.0.1:${TARGET_PORT}")
+	nextSiteCaddy := renderSiteCaddyfileWithUpstream(opts.Hostnames, opts.RoutePath, "127.0.0.1:${TARGET_PORT}")
 	cleanup := renderReleaseCleanupCommands(opts, "history_limit")
 
 	lines := []string{
@@ -506,7 +510,18 @@ func renderHetznerDeployScript(opts RemoteOptions) string {
 			shellQuote(sharedDockerNetwork),
 			shellQuote(sharedDockerNetwork)),
 		fmt.Sprintf("cat > %s <<'EOF'\n%sEOF", shellQuote(rootCaddyPath), renderRootCaddyfile()),
-		fmt.Sprintf("cp app.env %s", shellQuote(runtimeEnvPath)),
+		fmt.Sprintf("if [ -f %s ]; then", shellQuote(runtimeEnvPath)),
+		fmt.Sprintf("  while IFS= read -r line || [ -n \"$line\" ]; do"),
+		fmt.Sprintf("    key=\"${line%%%%=*}\""),
+		fmt.Sprintf("    [ -z \"$key\" ] && continue"),
+		fmt.Sprintf("    case \"$key\" in \\#*) continue;; esac"),
+		fmt.Sprintf("    grep -qx \"${key}=.*\" app.env 2>/dev/null || printf '%%s\\n' \"$line\" >> app.env.merged"),
+		fmt.Sprintf("  done < %s", shellQuote(runtimeEnvPath)),
+		fmt.Sprintf("  cat app.env >> app.env.merged 2>/dev/null || true"),
+		fmt.Sprintf("  mv app.env.merged %s", shellQuote(runtimeEnvPath)),
+		fmt.Sprintf("else"),
+		fmt.Sprintf("  cp app.env %s", shellQuote(runtimeEnvPath)),
+		fmt.Sprintf("fi"),
 		fmt.Sprintf("mkdir -p %s", shellQuote(releasesPath)),
 		fmt.Sprintf("mkdir -p %s", shellQuote(releaseDir)),
 		fmt.Sprintf("cp artifact.tar.gz %s", shellQuote(filepath.ToSlash(filepath.Join(releaseDir, "artifact.tar.gz")))),
@@ -565,8 +580,8 @@ func renderHetznerDeployScript(opts RemoteOptions) string {
 		fmt.Sprintf("cd %s", shellQuote(releaseDir)),
 		"docker build -t \"$RELEASE_IMAGE\" -f Dockerfile .",
 		"docker rm -f \"$next_container\" >/dev/null 2>&1 || true",
-		fmt.Sprintf("docker run -d --restart unless-stopped --network %s --env-file %s --name \"$next_container\" -p 127.0.0.1:${next_port}:%d \"$RELEASE_IMAGE\" >/dev/null",
-			shellQuote(sharedDockerNetwork), shellQuote(runtimeEnvPath), opts.ContainerPort),
+		fmt.Sprintf("docker run -d --restart unless-stopped --network %s --env-file %s --name \"$next_container\" -p 127.0.0.1:${next_port}:%d%s \"$RELEASE_IMAGE\" >/dev/null",
+			shellQuote(sharedDockerNetwork), shellQuote(runtimeEnvPath), opts.ContainerPort, renderVolumeFlags(opts.Volumes)),
 	)
 	if opts.PostDeploy != nil && strings.TrimSpace(opts.PostDeploy.Command) != "" {
 		lines = append(lines,
@@ -720,17 +735,17 @@ func renderSharedDatabaseSQL(opts SharedDatabaseOptions) string {
 	}, "\n")
 }
 
-func renderSiteCaddyfile(hostname, routePath string, servicePort int) string {
-	return renderSiteCaddyfileWithUpstream(hostname, routePath, fmt.Sprintf("127.0.0.1:%d", servicePort))
+func renderSiteCaddyfile(hostnames []string, routePath string, servicePort int) string {
+	return renderSiteCaddyfileWithUpstream(hostnames, routePath, fmt.Sprintf("127.0.0.1:%d", servicePort))
 }
 
-func renderSiteCaddyfileWithUpstream(hostname, routePath, upstream string) string {
-	hostname = strings.TrimSpace(hostname)
+func renderSiteCaddyfileWithUpstream(hostnames []string, routePath, upstream string) string {
+	hostLabel := formatCaddySiteHosts(hostnames)
 	routePath = normalizeRoutePath(routePath)
 	upstream = strings.TrimSpace(upstream)
 
 	lines := []string{
-		fmt.Sprintf("%s {", hostname),
+		fmt.Sprintf("%s {", hostLabel),
 		"  encode zstd gzip",
 	}
 
@@ -747,6 +762,26 @@ func renderSiteCaddyfileWithUpstream(hostname, routePath, upstream string) strin
 	lines = append(lines, "}")
 
 	return strings.Join(lines, "\n") + "\n"
+}
+
+func formatCaddySiteHosts(hostnames []string) string {
+	seen := map[string]struct{}{}
+	ordered := make([]string, 0, len(hostnames))
+	for _, hostname := range hostnames {
+		hostname = strings.TrimSpace(hostname)
+		if hostname == "" {
+			continue
+		}
+		if _, ok := seen[hostname]; ok {
+			continue
+		}
+		seen[hostname] = struct{}{}
+		ordered = append(ordered, hostname)
+	}
+	if len(ordered) == 0 {
+		return ""
+	}
+	return strings.Join(ordered, ", ")
 }
 
 func renderRootCaddyfile() string {
@@ -1313,6 +1348,18 @@ func buildSCPArgs(opts HetznerOptions) []string {
 		args = append(args, "-i", opts.SSHKeyPath)
 	}
 	return args
+}
+
+func renderVolumeFlags(volumes []string) string {
+	if len(volumes) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	for _, v := range volumes {
+		sb.WriteString(" -v ")
+		sb.WriteString(shellQuote(v))
+	}
+	return sb.String()
 }
 
 func shellQuote(value string) string {

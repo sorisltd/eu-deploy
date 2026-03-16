@@ -52,6 +52,8 @@ type RuntimeSpec struct {
 	Start       string          `yaml:"start"`
 	Port        int             `yaml:"port"`
 	Healthcheck HealthcheckSpec `yaml:"healthcheck"`
+	Packages    []string        `yaml:"packages,omitempty"`
+	Volumes     []string        `yaml:"volumes,omitempty"`
 }
 
 type RouteSpec struct {

@@ -867,6 +867,7 @@ func buildRemoteOptions(cfg config.Config, wd string, target deploy.RemoteTarget
 
 	projectName := build.ArtifactName(cfg, wd)
 	safeProject := deploy.SanitizeDockerName(projectName)
+	hostnames := resolveRouteHostnames(cfg)
 	opts := deploy.RemoteOptions{
 		Provider:           target,
 		WorkDir:            wd,
@@ -884,10 +885,16 @@ func buildRemoteOptions(cfg config.Config, wd string, target deploy.RemoteTarget
 		RemoteServerPath:   spec.ServerPath,
 		RemoteAppPath:      spec.AppPath,
 		Hostname:           resolveRouteHostname(cfg),
+		Hostnames:          hostnames,
 		RoutePath:          cfg.Routes[0].Path,
 		HealthcheckPath:    cfg.Runtime.Healthcheck.Path,
 		SiteConfigName:     deploy.BuildHetznerSiteConfigName(cfg.Routes[0].Hostname),
 		KeepReleases:       3,
+		Packages:           cfg.Runtime.Packages,
+		Volumes:            cfg.Runtime.Volumes,
+	}
+	if len(opts.Hostnames) == 0 && strings.TrimSpace(opts.Hostname) != "" {
+		opts.Hostnames = []string{opts.Hostname}
 	}
 	if cfg.Database != nil && strings.TrimSpace(cfg.Database.Mode) == "shared" && cfg.Database.Shared != nil {
 		opts.SharedDatabase = &deploy.SharedDatabaseOptions{

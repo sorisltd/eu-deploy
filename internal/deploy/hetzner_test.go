@@ -8,7 +8,7 @@ import (
 )
 
 func TestRenderSiteCaddyfile(t *testing.T) {
-	got := renderSiteCaddyfile("example.com", "/", 3000)
+	got := renderSiteCaddyfile([]string{"example.com"}, "/", 3000)
 
 	if !strings.Contains(got, "example.com {") {
 		t.Fatalf("missing site block:\n%s", got)
@@ -19,13 +19,24 @@ func TestRenderSiteCaddyfile(t *testing.T) {
 }
 
 func TestRenderSiteCaddyfileWithRoutePath(t *testing.T) {
-	got := renderSiteCaddyfile("example.com", "/book", 3002)
+	got := renderSiteCaddyfile([]string{"example.com"}, "/book", 3002)
 
 	if !strings.Contains(got, "handle_path /book* {") {
 		t.Fatalf("missing handle_path block:\n%s", got)
 	}
 	if !strings.Contains(got, "respond 404") {
 		t.Fatalf("missing 404 fallback:\n%s", got)
+	}
+}
+
+func TestRenderSiteCaddyfileWithMultipleHostnames(t *testing.T) {
+	got := renderSiteCaddyfile([]string{"example.com", "www.example.com"}, "/", 3000)
+
+	if !strings.Contains(got, "example.com, www.example.com {") {
+		t.Fatalf("missing combined site block:\n%s", got)
+	}
+	if !strings.Contains(got, "reverse_proxy 127.0.0.1:3000") {
+		t.Fatalf("missing reverse_proxy:\n%s", got)
 	}
 }
 
