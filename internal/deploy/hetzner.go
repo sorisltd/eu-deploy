@@ -607,6 +607,8 @@ func renderHetznerDeployScript(opts RemoteOptions) string {
 		fmt.Sprintf("cat > %s <<EOF\n%sEOF", shellQuote(siteConfigPath), nextSiteCaddy),
 		fmt.Sprintf("if docker ps --format '{{.Names}}' | grep -Fx -- %s >/dev/null 2>&1; then", shellQuote(opts.ProxyContainerName)),
 		fmt.Sprintf("  docker exec %s caddy reload --config /etc/caddy/Caddyfile >/dev/null", shellQuote(opts.ProxyContainerName)),
+		"elif CADDY_CONTAINER=$(docker ps --filter 'ancestor=caddy:2' --format '{{.Names}}' | head -1) && [ -n \"$CADDY_CONTAINER\" ]; then",
+		"  docker exec \"$CADDY_CONTAINER\" caddy reload --config /etc/caddy/Caddyfile >/dev/null 2>&1 || true",
 		"else",
 		"  docker pull caddy:2 >/dev/null",
 		fmt.Sprintf("  docker rm -f %s >/dev/null 2>&1 || true", shellQuote(opts.ProxyContainerName)),
