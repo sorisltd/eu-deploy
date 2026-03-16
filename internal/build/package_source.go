@@ -19,7 +19,7 @@ type PackageSource struct {
 }
 
 func ResolvePackageSource(cfg config.Config, workDir string) (PackageSource, error) {
-	outputDir := cfg.Build.Output
+	outputDir := config.EffectiveBuildOutput(cfg)
 	outputPath := outputDir
 	if !filepath.IsAbs(outputDir) {
 		outputPath = filepath.Join(workDir, outputDir)
@@ -50,6 +50,9 @@ func ResolvePackageSource(cfg config.Config, workDir string) (PackageSource, err
 }
 
 func RequiresDependencyInstall(cfg config.Config, workDir string) (bool, error) {
+	if config.NormalizeRuntimeType(cfg.Runtime) == "static" {
+		return false, nil
+	}
 	standalone, err := isNextStandaloneOutput(cfg, workDir)
 	if err != nil {
 		return false, err

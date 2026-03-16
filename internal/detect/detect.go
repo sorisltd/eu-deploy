@@ -11,6 +11,7 @@ import (
 type Result struct {
 	Framework    string
 	ProjectName  string
+	RuntimeType  string
 	BuildCommand string
 	StartCommand string
 	OutputDir    string
@@ -29,6 +30,7 @@ func Detect(dir string) Result {
 	res := Result{
 		Framework:   "auto",
 		ProjectName: filepath.Base(dir),
+		RuntimeType: "web",
 		OutputDir:   "dist",
 	}
 
@@ -96,6 +98,16 @@ func Detect(dir string) Result {
 		res.Framework = "nuxt"
 		res.OutputDir = ".output"
 		res.StartCommand = "node .output/server/index.mjs"
+	case has("@astrojs/astro") || has("astro"):
+		res.Framework = "astro"
+		res.RuntimeType = "static"
+		res.OutputDir = "dist"
+		res.StartCommand = ""
+	case has("vite") && !has("next") && !has("nuxt") && !has("@sveltejs/kit"):
+		res.Framework = "vite-static"
+		res.RuntimeType = "static"
+		res.OutputDir = "dist"
+		res.StartCommand = ""
 	default:
 		// remain auto
 	}
@@ -110,9 +122,18 @@ func Detect(dir string) Result {
 		if res.StartCommand == "" {
 			res.Warnings = append(res.Warnings, "No start script found in package.json. Set runtime.start manually.")
 		}
+	} else if res.RuntimeType == "static" && scriptCommand(pj.Scripts, "start") == "" {
+		res.Warnings = append(res.Warnings, fmtStaticRuntimeWarning(res.OutputDir))
 	}
 
 	return res
+}
+
+func fmtStaticRuntimeWarning(outputDir string) string {
+	if strings.TrimSpace(outputDir) == "" {
+		return "Static framework detected. Consider setting runtime.type: static."
+	}
+	return "Static framework detected without a start script. Consider setting runtime.type: static and runtime.output: " + outputDir + "."
 }
 
 func scriptCommand(scripts map[string]string, name string) string {

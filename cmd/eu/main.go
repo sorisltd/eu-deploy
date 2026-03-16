@@ -46,15 +46,22 @@ func main() {
 				Command: d.BuildCommand,
 				Output:  d.OutputDir,
 			}
-			cfg.Runtime = config.RuntimeSpec{
-				Type:  "web",
-				Port:  3000,
-				Start: d.StartCommand,
-				Healthcheck: config.HealthcheckSpec{
-					Path:     "/",
-					Interval: "10s",
-					Timeout:  "2s",
-				},
+			if d.RuntimeType == "static" {
+				cfg.Runtime = config.RuntimeSpec{
+					Type:   "static",
+					Output: d.OutputDir,
+				}
+			} else {
+				cfg.Runtime = config.RuntimeSpec{
+					Type:  "web",
+					Port:  3000,
+					Start: d.StartCommand,
+					Healthcheck: config.HealthcheckSpec{
+						Path:     "/",
+						Interval: "10s",
+						Timeout:  "2s",
+					},
+				}
 			}
 			cfg.Routes = []config.RouteSpec{
 				{Hostname: "my-app.eu-deploy.dev", Path: "/", Target: "web"},
@@ -155,14 +162,18 @@ func main() {
 				return err
 			}
 			target := resolveTarget(cfg, requestedTarget, "docker")
-			if runtimeType := strings.TrimSpace(cfg.Runtime.Type); runtimeType != "" && runtimeType != "web" {
-				return fmt.Errorf("unsupported runtime.type: %s", runtimeType)
-			}
+			runtimeType := config.NormalizeRuntimeType(cfg.Runtime)
 
 			switch target {
 			case "docker":
+				if runtimeType != "web" {
+					return fmt.Errorf("docker deploy only supports runtime.type=web")
+				}
 				return runDockerDeploy(cmd, cfg, wd)
 			case "hetzner", "scaleway", "ovh":
+				if runtimeType != "web" && runtimeType != "static" {
+					return fmt.Errorf("unsupported runtime.type: %s", runtimeType)
+				}
 				remoteTarget, err := deploy.ParseRemoteTarget(target)
 				if err != nil {
 					return err
@@ -214,7 +225,7 @@ func main() {
 			if !deploy.IsRemoteTarget(target) {
 				return fmt.Errorf("unsupported target: %s", target)
 			}
-			if runtimeType := strings.TrimSpace(cfg.Runtime.Type); runtimeType != "" && runtimeType != "web" {
+			if runtimeType := config.NormalizeRuntimeType(cfg.Runtime); runtimeType != "web" && runtimeType != "static" {
 				return fmt.Errorf("unsupported runtime.type: %s", runtimeType)
 			}
 
@@ -260,7 +271,7 @@ func main() {
 			if !deploy.IsRemoteTarget(target) {
 				return fmt.Errorf("unsupported target: %s", target)
 			}
-			if runtimeType := strings.TrimSpace(cfg.Runtime.Type); runtimeType != "" && runtimeType != "web" {
+			if runtimeType := config.NormalizeRuntimeType(cfg.Runtime); runtimeType != "web" && runtimeType != "static" {
 				return fmt.Errorf("unsupported runtime.type: %s", runtimeType)
 			}
 
@@ -605,6 +616,9 @@ func main() {
 }
 
 func runDockerDeploy(cmd *cobra.Command, cfg config.Config, wd string) error {
+	if config.NormalizeRuntimeType(cfg.Runtime) != "web" {
+		return fmt.Errorf("docker deploy only supports runtime.type=web")
+	}
 	jsonMode := commandJSONEnabled(cmd)
 	phases := dockerDeployPhaseDefinitions()
 	res, built, err := build.EnsureArtifact(cfg, wd, true)
@@ -715,6 +729,7 @@ func runDockerDeploy(cmd *cobra.Command, cfg config.Config, wd string) error {
 
 func runRemoteDeploy(cmd *cobra.Command, cfg config.Config, wd string, target deploy.RemoteTarget, prepared deploy.PrepareRemoteResult) error {
 	jsonMode := commandJSONEnabled(cmd)
+	runtimeType := config.NormalizeRuntimeType(cfg.Runtime)
 	phases := remoteDeployPhaseDefinitions()
 	currentPhase := 1
 	res, built, err := build.EnsureArtifact(cfg, wd, true)
@@ -728,11 +743,19 @@ func runRemoteDeploy(cmd *cobra.Command, cfg config.Config, wd string, target de
 		fmt.Printf("OK Build complete\n")
 	}
 
-	if strings.TrimSpace(cfg.Runtime.Start) == "" {
-		return fmt.Errorf("runtime.start is empty in eudeploy.yaml")
-	}
-	if cfg.Runtime.Port == 0 {
-		return fmt.Errorf("runtime.port is empty in eudeploy.yaml")
+	if runtimeType == "web" {
+		if strings.TrimSpace(cfg.Runtime.Start) == "" {
+			return fmt.Errorf("runtime.start is empty in eudeploy.yaml")
+		}
+		if cfg.Runtime.Port == 0 {
+			return fmt.Errorf("runtime.port is empty in eudeploy.yaml")
+		}
+	} else if runtimeType == "static" {
+		if strings.TrimSpace(config.EffectiveBuildOutput(cfg)) == "" {
+			return fmt.Errorf("runtime.output or build.output is empty in eudeploy.yaml")
+		}
+	} else {
+		return fmt.Errorf("unsupported runtime.type: %s", runtimeType)
 	}
 	if len(cfg.Routes) == 0 || strings.TrimSpace(cfg.Routes[0].Hostname) == "" {
 		return fmt.Errorf("routes[0].hostname is required for remote deploys")
@@ -870,9 +893,11 @@ func buildRemoteOptions(cfg config.Config, wd string, target deploy.RemoteTarget
 	hostnames := resolveRouteHostnames(cfg)
 	opts := deploy.RemoteOptions{
 		Provider:           target,
+		RuntimeType:        config.NormalizeRuntimeType(cfg.Runtime),
 		WorkDir:            wd,
 		ArtifactSHA:        artifactSHA,
 		RuntimeStart:       cfg.Runtime.Start,
+		StaticArchiveRoot:  config.EffectiveStaticArchiveRoot(cfg),
 		ContainerPort:      cfg.Runtime.Port,
 		ServicePort:        spec.ServicePort,
 		ImageTag:           fmt.Sprintf("eu-deploy-%s:remote", safeProject),

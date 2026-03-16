@@ -71,7 +71,8 @@ func BuildProject(cfg config.Config, workDir string) (Result, error) {
 	if strings.TrimSpace(cfg.Build.Command) == "" {
 		return Result{}, fmt.Errorf("build.command is empty in eudeploy.yaml")
 	}
-	if strings.TrimSpace(cfg.Build.Output) == "" {
+	outputDir := config.EffectiveBuildOutput(cfg)
+	if strings.TrimSpace(outputDir) == "" {
 		return Result{}, fmt.Errorf("build.output is empty in eudeploy.yaml")
 	}
 
@@ -84,7 +85,6 @@ func BuildProject(cfg config.Config, workDir string) (Result, error) {
 		return Result{}, err
 	}
 
-	outputDir := cfg.Build.Output
 	pkgSource, err := ResolvePackageSource(cfg, workDir)
 	if err != nil {
 		return Result{}, err

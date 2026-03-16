@@ -40,6 +40,32 @@ func TestRenderSiteCaddyfileWithMultipleHostnames(t *testing.T) {
 	}
 }
 
+func TestRenderStaticSiteCaddyfile(t *testing.T) {
+	got := renderStaticSiteCaddyfile([]string{"example.com"}, "/", "/opt/eu-deploy/apps/example/static")
+
+	for _, expected := range []string{
+		"example.com {",
+		"root * /opt/eu-deploy/apps/example/static",
+		"try_files {path} /index.html",
+		"file_server",
+	} {
+		if !strings.Contains(got, expected) {
+			t.Fatalf("static site caddyfile missing %q:\n%s", expected, got)
+		}
+	}
+}
+
+func TestRenderStaticSiteCaddyfileWithRoutePath(t *testing.T) {
+	got := renderStaticSiteCaddyfile([]string{"example.com"}, "/docs", "/opt/eu-deploy/apps/example/static")
+
+	if !strings.Contains(got, "handle_path /docs* {") {
+		t.Fatalf("missing static handle_path block:\n%s", got)
+	}
+	if !strings.Contains(got, "respond 404") {
+		t.Fatalf("missing static 404 fallback:\n%s", got)
+	}
+}
+
 func TestRenderRootCaddyfile(t *testing.T) {
 	if got := renderRootCaddyfile(); got != "import /etc/caddy/sites/*.caddy\n" {
 		t.Fatalf("unexpected root caddyfile: %q", got)
@@ -206,6 +232,76 @@ func TestRenderHetznerDeployScriptMigratesLegacySingleContainer(t *testing.T) {
 		if !strings.Contains(got, expected) {
 			t.Fatalf("deploy script missing %q:\n%s", expected, got)
 		}
+	}
+}
+
+func TestRenderStaticHetznerDeployScript(t *testing.T) {
+	got := renderHetznerDeployScript(HetznerOptions{
+		RuntimeType:        "static",
+		RemoteServerPath:   "/opt/eu-deploy",
+		RemoteAppPath:      "/opt/eu-deploy/apps/example",
+		RemoteHost:         "example.com",
+		RemoteUser:         "root",
+		RemotePort:         22,
+		ReleaseID:          "release-123",
+		ArtifactSHA:        "sha123",
+		StaticArchiveRoot:  "dist",
+		ProxyContainerName: "eu-shared-caddy",
+		Hostname:           "example.com",
+		Hostnames:          []string{"example.com"},
+		RoutePath:          "/",
+		SiteConfigName:     "example.com.caddy",
+		ImageTag:           "eu-deploy-example:remote",
+	})
+
+	for _, expected := range []string{
+		"tar -xzf '/opt/eu-deploy/apps/example/releases/release-123/artifact.tar.gz' -C '/opt/eu-deploy/apps/example/releases/release-123'",
+		"ln -sfn '/opt/eu-deploy/apps/example/releases/release-123/dist' '/opt/eu-deploy/apps/example/static'",
+		"root * /opt/eu-deploy/apps/example/static",
+		"try_files {path} /index.html",
+		"printf '%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n' 'release-123' 'static' '0'",
+	} {
+		if !strings.Contains(got, expected) {
+			t.Fatalf("static deploy script missing %q:\n%s", expected, got)
+		}
+	}
+	if strings.Contains(got, "docker build -t") {
+		t.Fatalf("static deploy script should not build a docker image:\n%s", got)
+	}
+}
+
+func TestRenderStaticRollbackRemoteScript(t *testing.T) {
+	got := renderRollbackRemoteScript(HetznerOptions{
+		RuntimeType:        "static",
+		RemoteServerPath:   "/opt/eu-deploy",
+		RemoteAppPath:      "/opt/eu-deploy/apps/example",
+		RemoteHost:         "example.com",
+		RemoteUser:         "root",
+		RemotePort:         22,
+		StaticArchiveRoot:  "dist",
+		ProxyContainerName: "eu-shared-caddy",
+		Hostname:           "example.com",
+		Hostnames:          []string{"example.com"},
+		RoutePath:          "/",
+		SiteConfigName:     "example.com.caddy",
+		ImageTag:           "eu-deploy-example:remote",
+	}, ReleaseRecord{
+		ID:          "release-122",
+		ArtifactSHA: "sha122",
+	})
+
+	for _, expected := range []string{
+		"TARGET_ROOT='/opt/eu-deploy/apps/example/releases/release-122/dist'",
+		"ln -sfn \"$TARGET_ROOT\" '/opt/eu-deploy/apps/example/static'",
+		"root * /opt/eu-deploy/apps/example/static",
+		"try_files {path} /index.html",
+	} {
+		if !strings.Contains(got, expected) {
+			t.Fatalf("static rollback script missing %q:\n%s", expected, got)
+		}
+	}
+	if strings.Contains(got, "docker run -d --restart unless-stopped --network 'eu-deploy'") {
+		t.Fatalf("static rollback script should not start an app container:\n%s", got)
 	}
 }
 

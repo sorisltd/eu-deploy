@@ -13,6 +13,9 @@ import (
 )
 
 func LogsRemote(opts RemoteOptions, component string, follow bool, tail int) error {
+	if isStaticRuntime(opts.RuntimeType) {
+		return fmt.Errorf("logs are not available for runtime.type=static")
+	}
 	if err := validateRemoteOptions(opts); err != nil {
 		return err
 	}
@@ -21,6 +24,9 @@ func LogsRemote(opts RemoteOptions, component string, follow bool, tail int) err
 }
 
 func LogsRemoteJSON(opts RemoteOptions, component string, follow bool, tail int, w io.Writer) error {
+	if isStaticRuntime(opts.RuntimeType) {
+		return fmt.Errorf("logs are not available for runtime.type=static")
+	}
 	if err := validateRemoteOptions(opts); err != nil {
 		return err
 	}
@@ -223,6 +229,9 @@ func renderActiveAppContainerExpression(opts RemoteOptions) string {
 }
 
 func renderDestroyRemoteScript(opts RemoteOptions, dropDatabase bool) string {
+	if isStaticRuntime(opts.RuntimeType) {
+		return renderDestroyStaticRemoteScript(opts, dropDatabase)
+	}
 	proxySitesDir := filepathJoinSlash(sharedProxyRoot(opts.RemoteServerPath), "sites")
 	siteConfigPath := filepathJoinSlash(proxySitesDir, opts.SiteConfigName)
 	containers := []string{
@@ -258,6 +267,33 @@ func renderDestroyRemoteScript(opts RemoteOptions, dropDatabase bool) string {
 	return strings.Join(lines, "\n")
 }
 
+func renderDestroyStaticRemoteScript(opts RemoteOptions, dropDatabase bool) string {
+	proxySitesDir := filepathJoinSlash(sharedProxyRoot(opts.RemoteServerPath), "sites")
+	siteConfigPath := filepathJoinSlash(proxySitesDir, opts.SiteConfigName)
+	lines := []string{
+		"set -euo pipefail",
+	}
+
+	if dropDatabase && opts.SharedDatabase != nil {
+		lines = append(lines, renderSharedDatabaseDestroy(opts)...)
+	}
+
+	lines = append(lines,
+		fmt.Sprintf("rm -f %s %s %s || true", shellQuote(siteConfigPath), shellQuote(currentReleasePath(opts)), shellQuote(activeSlotPath(opts))),
+		fmt.Sprintf("rm -f %s || true", shellQuote(releaseHistoryPath(opts))),
+		fmt.Sprintf("rm -rf %s || true", shellQuote(opts.RemoteAppPath)),
+		fmt.Sprintf("if docker ps --format '{{.Names}}' | grep -Fx -- %s >/dev/null 2>&1; then", shellQuote(opts.ProxyContainerName)),
+		fmt.Sprintf("  if find %s -maxdepth 1 -type f -name '*.caddy' | grep -q .; then", shellQuote(proxySitesDir)),
+		fmt.Sprintf("    docker exec %s caddy reload --config /etc/caddy/Caddyfile >/dev/null", shellQuote(opts.ProxyContainerName)),
+		"  else",
+		fmt.Sprintf("    docker rm -f %s >/dev/null 2>&1 || true", shellQuote(opts.ProxyContainerName)),
+		"  fi",
+		"fi",
+	)
+
+	return strings.Join(lines, "\n")
+}
+
 func renderSharedDatabaseDestroy(opts RemoteOptions) []string {
 	sql := renderSharedDatabaseDestroySQL(*opts.SharedDatabase)
 	return []string{
@@ -278,6 +314,9 @@ func renderSharedDatabaseDestroySQL(opts SharedDatabaseOptions) string {
 }
 
 func renderRollbackRemoteScript(opts RemoteOptions, target ReleaseRecord) string {
+	if isStaticRuntime(opts.RuntimeType) {
+		return renderRollbackStaticRemoteScript(opts, target)
+	}
 	healthPath := normalizedHealthcheckPath(opts.HealthcheckPath)
 	proxyRoot := sharedProxyRoot(opts.RemoteServerPath)
 	proxySitesDir := filepath.ToSlash(filepath.Join(proxyRoot, "sites"))
@@ -351,5 +390,55 @@ func renderRollbackRemoteScript(opts RemoteOptions, target ReleaseRecord) string
 		"if [ -f \"$HISTORY_FILE\" ]; then tail -n \"$history_limit\" \"$HISTORY_FILE\" > \"$HISTORY_FILE.tmp\" && mv \"$HISTORY_FILE.tmp\" \"$HISTORY_FILE\"; fi",
 		cleanup,
 	}
+	return strings.Join(lines, "\n")
+}
+
+func renderRollbackStaticRemoteScript(opts RemoteOptions, target ReleaseRecord) string {
+	proxyRoot := sharedProxyRoot(opts.RemoteServerPath)
+	proxySitesDir := filepath.ToSlash(filepath.Join(proxyRoot, "sites"))
+	rootCaddyPath := filepath.ToSlash(filepath.Join(proxyRoot, "Caddyfile"))
+	proxyDataPath := filepath.ToSlash(filepath.Join(proxyRoot, "data"))
+	proxyConfigPath := filepath.ToSlash(filepath.Join(proxyRoot, "config"))
+	siteConfigPath := filepath.ToSlash(filepath.Join(proxySitesDir, opts.SiteConfigName))
+	targetRoot := staticReleaseRootPath(opts, target.ID)
+	staticRootPath := staticCurrentRootPath(opts)
+	siteCaddy := renderStaticSiteCaddyfile(opts.Hostnames, opts.RoutePath, staticRootPath)
+	cleanup := renderReleaseCleanupCommands(opts, "history_limit")
+
+	lines := []string{
+		"set -euo pipefail",
+		fmt.Sprintf("TARGET_ROOT=%s", shellQuote(targetRoot)),
+		fmt.Sprintf("TARGET_RELEASE=%s", shellQuote(target.ID)),
+		fmt.Sprintf("TARGET_SHA=%s", shellQuote(target.ArtifactSHA)),
+		fmt.Sprintf("CURRENT_RELEASE_FILE=%s", shellQuote(currentReleasePath(opts))),
+		fmt.Sprintf("HISTORY_FILE=%s", shellQuote(releaseHistoryPath(opts))),
+		"if [ ! -d \"$TARGET_ROOT\" ]; then",
+		"  echo 'target static release is missing on the remote host' >&2",
+		"  exit 1",
+		"fi",
+		fmt.Sprintf("rm -rf %s", shellQuote(staticRootPath)),
+		fmt.Sprintf("ln -sfn \"$TARGET_ROOT\" %s", shellQuote(staticRootPath)),
+		fmt.Sprintf("cat > %s <<'EOF'\n%sEOF", shellQuote(rootCaddyPath), renderRootCaddyfile()),
+		fmt.Sprintf("cat > %s <<EOF\n%sEOF", shellQuote(siteConfigPath), siteCaddy),
+		fmt.Sprintf("if docker ps --format '{{.Names}}' | grep -Fx -- %s >/dev/null 2>&1; then", shellQuote(opts.ProxyContainerName)),
+		fmt.Sprintf("  docker exec %s caddy reload --config /etc/caddy/Caddyfile >/dev/null", shellQuote(opts.ProxyContainerName)),
+		"else",
+		"  docker pull caddy:2 >/dev/null",
+		fmt.Sprintf("  docker rm -f %s >/dev/null 2>&1 || true", shellQuote(opts.ProxyContainerName)),
+		fmt.Sprintf("  docker run -d --restart unless-stopped --network host --name %s -v %s:/etc/caddy/Caddyfile:ro -v %s:/etc/caddy/sites:ro -v %s:/data -v %s:/config caddy:2 >/dev/null",
+			shellQuote(opts.ProxyContainerName),
+			shellQuote(rootCaddyPath),
+			shellQuote(proxySitesDir),
+			shellQuote(proxyDataPath),
+			shellQuote(proxyConfigPath)),
+		"fi",
+		"printf '%s\\n' \"$TARGET_RELEASE\" > \"$CURRENT_RELEASE_FILE\"",
+		fmt.Sprintf("printf '%%s\\t%%s\\t%%s\\t%%s\\t%%s\\t%%s\\n' \"$TARGET_RELEASE\" 'static' '0' %s \"$TARGET_SHA\" \"$(date -u +%%Y-%%m-%%dT%%H:%%M:%%SZ)\" >> \"$HISTORY_FILE\"",
+			shellQuote(staticReleaseMarker(target.ID))),
+		fmt.Sprintf("history_limit=%d", releaseKeepCount(opts)),
+		"if [ -f \"$HISTORY_FILE\" ]; then tail -n \"$history_limit\" \"$HISTORY_FILE\" > \"$HISTORY_FILE.tmp\" && mv \"$HISTORY_FILE.tmp\" \"$HISTORY_FILE\"; fi",
+		cleanup,
+	}
+
 	return strings.Join(lines, "\n")
 }

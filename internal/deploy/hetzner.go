@@ -26,11 +26,13 @@ const (
 
 type RemoteOptions struct {
 	Provider            RemoteTarget
+	RuntimeType         string
 	WorkDir             string
 	ArtifactPath        string
 	ArtifactSHA         string
 	ReleaseID           string
 	RuntimeStart        string
+	StaticArchiveRoot   string
 	ContainerPort       int
 	ServicePort         int
 	ImageTag            string
@@ -92,6 +94,7 @@ func PrepareRemoteConfig(cfg *config.Config, workDir string, target RemoteTarget
 		in:  bufio.NewReader(os.Stdin),
 		out: os.Stdout,
 	}
+	runtimeType := normalizedRuntimeType(cfg.Runtime.Type)
 
 	changed := false
 	if cfg.Deploy.Provider == "" {
@@ -113,6 +116,10 @@ func PrepareRemoteConfig(cfg *config.Config, workDir string, target RemoteTarget
 		cfg.Build.Command = value
 		changed = true
 	}
+	if runtimeType == "static" && strings.TrimSpace(cfg.Build.Output) == "" && strings.TrimSpace(cfg.Runtime.Output) != "" {
+		cfg.Build.Output = cfg.Runtime.Output
+		changed = true
+	}
 	if strings.TrimSpace(cfg.Build.Output) == "" {
 		value, err := p.String("Build output directory", defaultBuildOutput(cfg.Project.Framework), true)
 		if err != nil {
@@ -121,29 +128,44 @@ func PrepareRemoteConfig(cfg *config.Config, workDir string, target RemoteTarget
 		cfg.Build.Output = value
 		changed = true
 	}
-	if strings.TrimSpace(cfg.Runtime.Start) == "" {
-		value, err := p.String("Runtime start command", defaultRuntimeStart(cfg.Project.Framework), true)
-		if err != nil {
-			return PrepareRemoteResult{}, err
+
+	if runtimeType == "static" {
+		if strings.TrimSpace(cfg.Runtime.Output) == "" {
+			cfg.Runtime.Output = config.EffectiveBuildOutput(*cfg)
+			if strings.TrimSpace(cfg.Runtime.Output) == "" {
+				value, err := p.String("Static output directory", defaultBuildOutput(cfg.Project.Framework), true)
+				if err != nil {
+					return PrepareRemoteResult{}, err
+				}
+				cfg.Runtime.Output = value
+			}
+			changed = true
 		}
-		cfg.Runtime.Start = value
-		changed = true
-	}
-	if cfg.Runtime.Port == 0 {
-		value, err := p.Int("Runtime port", 3000, true)
-		if err != nil {
-			return PrepareRemoteResult{}, err
+	} else {
+		if strings.TrimSpace(cfg.Runtime.Start) == "" {
+			value, err := p.String("Runtime start command", defaultRuntimeStart(cfg.Project.Framework), true)
+			if err != nil {
+				return PrepareRemoteResult{}, err
+			}
+			cfg.Runtime.Start = value
+			changed = true
 		}
-		cfg.Runtime.Port = value
-		changed = true
-	}
-	if strings.TrimSpace(cfg.Runtime.Healthcheck.Path) == "" || strings.TrimSpace(cfg.Runtime.Healthcheck.Path) == "/health" {
-		value, err := p.String("Healthcheck path", "/", true)
-		if err != nil {
-			return PrepareRemoteResult{}, err
+		if cfg.Runtime.Port == 0 {
+			value, err := p.Int("Runtime port", 3000, true)
+			if err != nil {
+				return PrepareRemoteResult{}, err
+			}
+			cfg.Runtime.Port = value
+			changed = true
 		}
-		cfg.Runtime.Healthcheck.Path = value
-		changed = true
+		if strings.TrimSpace(cfg.Runtime.Healthcheck.Path) == "" || strings.TrimSpace(cfg.Runtime.Healthcheck.Path) == "/health" {
+			value, err := p.String("Healthcheck path", "/", true)
+			if err != nil {
+				return PrepareRemoteResult{}, err
+			}
+			cfg.Runtime.Healthcheck.Path = value
+			changed = true
+		}
 	}
 
 	if len(cfg.Routes) == 0 {
@@ -216,7 +238,7 @@ func PrepareRemoteConfig(cfg *config.Config, workDir string, target RemoteTarget
 		spec.AppPath = filepath.ToSlash(filepath.Clean(value))
 		changed = true
 	}
-	if spec.ServicePort == 0 {
+	if runtimeType != "static" && spec.ServicePort == 0 {
 		value, err := p.Int("Remote loopback service port", cfg.Runtime.Port, true)
 		if err != nil {
 			return PrepareRemoteResult{}, err
@@ -303,10 +325,11 @@ func DeployToHetzner(opts HetznerOptions) error {
 
 func validateRemoteOptions(opts RemoteOptions) error {
 	prefix := providerConfigFieldPrefix(opts.Provider)
+	staticRuntime := isStaticRuntime(opts.RuntimeType)
 	switch {
 	case strings.TrimSpace(opts.WorkDir) == "":
 		return fmt.Errorf("work dir is required")
-	case opts.ServicePort <= 0:
+	case !staticRuntime && opts.ServicePort <= 0:
 		return fmt.Errorf("%s.service_port is required", prefix)
 	case strings.TrimSpace(opts.RemoteHost) == "":
 		return fmt.Errorf("%s.host is required", prefix)
@@ -320,9 +343,9 @@ func validateRemoteOptions(opts RemoteOptions) error {
 		return fmt.Errorf("%s.app_path is required", prefix)
 	case strings.TrimSpace(opts.Hostname) == "":
 		return fmt.Errorf("routes[0].hostname is required")
-	case strings.TrimSpace(opts.ImageTag) == "":
+	case !staticRuntime && strings.TrimSpace(opts.ImageTag) == "":
 		return fmt.Errorf("image tag is required")
-	case strings.TrimSpace(opts.AppContainerName) == "":
+	case !staticRuntime && strings.TrimSpace(opts.AppContainerName) == "":
 		return fmt.Errorf("app container name is required")
 	case strings.TrimSpace(opts.ProxyContainerName) == "":
 		return fmt.Errorf("proxy container name is required")
@@ -342,6 +365,16 @@ func validateRemoteOptions(opts RemoteOptions) error {
 func validateRemoteDeployOptions(opts RemoteOptions) error {
 	if err := validateRemoteOptions(opts); err != nil {
 		return err
+	}
+	if isStaticRuntime(opts.RuntimeType) {
+		switch {
+		case strings.TrimSpace(opts.ArtifactPath) == "":
+			return fmt.Errorf("artifact path is required")
+		case strings.TrimSpace(opts.StaticArchiveRoot) == "":
+			return fmt.Errorf("runtime.output or build.output is required for runtime.type=static")
+		default:
+			return nil
+		}
 	}
 	switch {
 	case strings.TrimSpace(opts.ArtifactPath) == "":
@@ -373,6 +406,10 @@ func prepareHetznerBundle(opts RemoteOptions) (string, error) {
 	if err := copyHetznerFile(artifactSource, filepath.Join(bundleDir, "artifact.tar.gz")); err != nil {
 		os.RemoveAll(bundleDir)
 		return "", err
+	}
+
+	if isStaticRuntime(opts.RuntimeType) {
+		return bundleDir, nil
 	}
 
 	dockerfileOpts := DockerOptions{
@@ -474,6 +511,9 @@ func runHetznerDeployScript(opts RemoteOptions) error {
 }
 
 func renderHetznerDeployScript(opts RemoteOptions) string {
+	if isStaticRuntime(opts.RuntimeType) {
+		return renderStaticHetznerDeployScript(opts)
+	}
 	if strings.TrimSpace(opts.ReleaseID) == "" {
 		opts.ReleaseID = "release"
 	}
@@ -637,6 +677,79 @@ func renderHetznerDeployScript(opts RemoteOptions) string {
 	return strings.Join(lines, "\n")
 }
 
+func renderStaticHetznerDeployScript(opts RemoteOptions) string {
+	if strings.TrimSpace(opts.ReleaseID) == "" {
+		opts.ReleaseID = "release"
+	}
+	if strings.TrimSpace(opts.ArtifactSHA) == "" {
+		opts.ArtifactSHA = "unknown"
+	}
+	proxyRoot := sharedProxyRoot(opts.RemoteServerPath)
+	proxySitesDir := filepath.ToSlash(filepath.Join(proxyRoot, "sites"))
+	rootCaddyPath := filepath.ToSlash(filepath.Join(proxyRoot, "Caddyfile"))
+	proxyDataPath := filepath.ToSlash(filepath.Join(proxyRoot, "data"))
+	proxyConfigPath := filepath.ToSlash(filepath.Join(proxyRoot, "config"))
+	siteConfigPath := filepath.ToSlash(filepath.Join(proxySitesDir, opts.SiteConfigName))
+	releaseDir := releaseDirPath(opts, opts.ReleaseID)
+	releasesPath := releasesRootPath(opts)
+	historyPath := releaseHistoryPath(opts)
+	currentReleaseFile := currentReleasePath(opts)
+	staticRootPath := staticCurrentRootPath(opts)
+	releaseStaticRoot := staticReleaseRootPath(opts, opts.ReleaseID)
+	siteCaddy := renderStaticSiteCaddyfile(opts.Hostnames, opts.RoutePath, staticRootPath)
+	cleanup := renderReleaseCleanupCommands(opts, "history_limit")
+
+	lines := []string{
+		"set -euo pipefail",
+		fmt.Sprintf("cd %s", shellQuote(opts.RemoteAppPath)),
+		"if ! command -v docker >/dev/null 2>&1; then",
+		"  echo 'docker is required on the remote host' >&2",
+		"  exit 1",
+		"fi",
+		"if ! command -v tar >/dev/null 2>&1; then",
+		"  echo 'tar is required on the remote host' >&2",
+		"  exit 1",
+		"fi",
+		fmt.Sprintf("cat > %s <<'EOF'\n%sEOF", shellQuote(rootCaddyPath), renderRootCaddyfile()),
+		fmt.Sprintf("mkdir -p %s", shellQuote(releasesPath)),
+		fmt.Sprintf("rm -rf %s", shellQuote(releaseDir)),
+		fmt.Sprintf("mkdir -p %s", shellQuote(releaseDir)),
+		fmt.Sprintf("cp artifact.tar.gz %s", shellQuote(filepath.ToSlash(filepath.Join(releaseDir, "artifact.tar.gz")))),
+		fmt.Sprintf("tar -xzf %s -C %s", shellQuote(filepath.ToSlash(filepath.Join(releaseDir, "artifact.tar.gz"))), shellQuote(releaseDir)),
+		fmt.Sprintf("if [ ! -d %s ]; then", shellQuote(releaseStaticRoot)),
+		fmt.Sprintf("  echo 'static output folder not found after extraction: %s' >&2", releaseStaticRoot),
+		"  exit 1",
+		"fi",
+		fmt.Sprintf("rm -rf %s", shellQuote(staticRootPath)),
+		fmt.Sprintf("ln -sfn %s %s", shellQuote(releaseStaticRoot), shellQuote(staticRootPath)),
+		fmt.Sprintf("cat > %s <<EOF\n%sEOF", shellQuote(siteConfigPath), siteCaddy),
+		fmt.Sprintf("if docker ps --format '{{.Names}}' | grep -Fx -- %s >/dev/null 2>&1; then", shellQuote(opts.ProxyContainerName)),
+		fmt.Sprintf("  docker exec %s caddy reload --config /etc/caddy/Caddyfile >/dev/null", shellQuote(opts.ProxyContainerName)),
+		"elif CADDY_CONTAINER=$(docker ps --filter 'ancestor=caddy:2' --format '{{.Names}}' | head -1) && [ -n \"$CADDY_CONTAINER\" ]; then",
+		"  docker exec \"$CADDY_CONTAINER\" caddy reload --config /etc/caddy/Caddyfile >/dev/null 2>&1 || true",
+		"else",
+		"  docker pull caddy:2 >/dev/null",
+		fmt.Sprintf("  docker rm -f %s >/dev/null 2>&1 || true", shellQuote(opts.ProxyContainerName)),
+		fmt.Sprintf("  docker run -d --restart unless-stopped --network host --name %s -v %s:/etc/caddy/Caddyfile:ro -v %s:/etc/caddy/sites:ro -v %s:/data -v %s:/config caddy:2 >/dev/null",
+			shellQuote(opts.ProxyContainerName),
+			shellQuote(rootCaddyPath),
+			shellQuote(proxySitesDir),
+			shellQuote(proxyDataPath),
+			shellQuote(proxyConfigPath)),
+		"fi",
+		fmt.Sprintf("HISTORY_FILE=%s", shellQuote(historyPath)),
+		fmt.Sprintf("printf '%%s\\n' %s > %s", shellQuote(opts.ReleaseID), shellQuote(currentReleaseFile)),
+		fmt.Sprintf("printf '%%s\\t%%s\\t%%s\\t%%s\\t%%s\\t%%s\\n' %s 'static' '0' %s %s \"$(date -u +%%Y-%%m-%%dT%%H:%%M:%%SZ)\" >> \"$HISTORY_FILE\"",
+			shellQuote(opts.ReleaseID),
+			shellQuote(staticReleaseMarker(opts.ReleaseID)),
+			shellQuote(opts.ArtifactSHA)),
+		fmt.Sprintf("history_limit=%d", releaseKeepCount(opts)),
+		"if [ -f \"$HISTORY_FILE\" ]; then tail -n \"$history_limit\" \"$HISTORY_FILE\" > \"$HISTORY_FILE.tmp\" && mv \"$HISTORY_FILE.tmp\" \"$HISTORY_FILE\"; fi",
+		cleanup,
+	}
+	return strings.Join(lines, "\n")
+}
+
 func runRemoteScript(opts RemoteOptions, script string) error {
 	args := buildSSHArgs(opts, false)
 	args = append(args, fmt.Sprintf("%s@%s", opts.RemoteUser, opts.RemoteHost), "bash -se")
@@ -741,6 +854,37 @@ func renderSharedDatabaseSQL(opts SharedDatabaseOptions) string {
 
 func renderSiteCaddyfile(hostnames []string, routePath string, servicePort int) string {
 	return renderSiteCaddyfileWithUpstream(hostnames, routePath, fmt.Sprintf("127.0.0.1:%d", servicePort))
+}
+
+func renderStaticSiteCaddyfile(hostnames []string, routePath, rootPath string) string {
+	hostLabel := formatCaddySiteHosts(hostnames)
+	routePath = normalizeRoutePath(routePath)
+	rootPath = strings.TrimSpace(rootPath)
+
+	lines := []string{
+		fmt.Sprintf("%s {", hostLabel),
+		"  encode zstd gzip",
+	}
+
+	if routePath == "/" {
+		lines = append(lines,
+			fmt.Sprintf("  root * %s", rootPath),
+			"  try_files {path} /index.html",
+			"  file_server",
+		)
+	} else {
+		lines = append(lines,
+			fmt.Sprintf("  handle_path %s* {", routePath),
+			fmt.Sprintf("    root * %s", rootPath),
+			"    try_files {path} /index.html",
+			"    file_server",
+			"  }",
+			"  respond 404",
+		)
+	}
+	lines = append(lines, "}")
+
+	return strings.Join(lines, "\n") + "\n"
 }
 
 func renderSiteCaddyfileWithUpstream(hostnames []string, routePath, upstream string) string {

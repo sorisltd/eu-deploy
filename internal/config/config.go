@@ -2,6 +2,8 @@ package config
 
 import (
 	"os"
+	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -48,10 +50,11 @@ type HealthcheckSpec struct {
 }
 
 type RuntimeSpec struct {
-	Type        string          `yaml:"type"` // web|worker|cron
-	Start       string          `yaml:"start"`
-	Port        int             `yaml:"port"`
-	Healthcheck HealthcheckSpec `yaml:"healthcheck"`
+	Type        string          `yaml:"type"` // web|static|worker|cron
+	Start       string          `yaml:"start,omitempty"`
+	Output      string          `yaml:"output,omitempty"`
+	Port        int             `yaml:"port,omitempty"`
+	Healthcheck HealthcheckSpec `yaml:"healthcheck,omitempty"`
 	Packages    []string        `yaml:"packages,omitempty"`
 	Volumes     []string        `yaml:"volumes,omitempty"`
 }
@@ -163,4 +166,30 @@ func ReadYAML(path string) (Config, error) {
 		return Config{}, err
 	}
 	return cfg, nil
+}
+
+func NormalizeRuntimeType(spec RuntimeSpec) string {
+	runtimeType := strings.TrimSpace(strings.ToLower(spec.Type))
+	if runtimeType == "" {
+		return "web"
+	}
+	return runtimeType
+}
+
+func EffectiveBuildOutput(cfg Config) string {
+	if output := strings.TrimSpace(cfg.Build.Output); output != "" {
+		return output
+	}
+	if NormalizeRuntimeType(cfg.Runtime) == "static" {
+		return strings.TrimSpace(cfg.Runtime.Output)
+	}
+	return ""
+}
+
+func EffectiveStaticArchiveRoot(cfg Config) string {
+	output := EffectiveBuildOutput(cfg)
+	if output == "" {
+		return ""
+	}
+	return filepath.Base(filepath.Clean(output))
 }

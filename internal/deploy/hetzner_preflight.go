@@ -115,15 +115,17 @@ func PreflightRemote(opts RemoteOptions) ([]PreflightResult, error) {
 		results = append(results, interpretSharedProxyCheck(strings.TrimSpace(portsStatus)))
 	}
 
-	serviceStatus, err := runRemoteCommandCapture(opts, true, renderRemoteServicePortCheck(opts.ServicePort, opts.AppContainerName))
-	if err != nil {
-		results = append(results, PreflightResult{
-			Name:   "Service port",
-			Status: PreflightWarning,
-			Detail: strings.TrimSpace(err.Error()),
-		})
-	} else {
-		results = append(results, interpretServicePortCheck(strings.TrimSpace(serviceStatus), opts.ServicePort))
+	if !isStaticRuntime(opts.RuntimeType) {
+		serviceStatus, err := runRemoteCommandCapture(opts, true, renderRemoteServicePortCheck(opts.ServicePort, opts.AppContainerName))
+		if err != nil {
+			results = append(results, PreflightResult{
+				Name:   "Service port",
+				Status: PreflightWarning,
+				Detail: strings.TrimSpace(err.Error()),
+			})
+		} else {
+			results = append(results, interpretServicePortCheck(strings.TrimSpace(serviceStatus), opts.ServicePort))
+		}
 	}
 
 	if opts.SharedDatabase != nil {

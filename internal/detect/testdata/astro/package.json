@@ -1,0 +1,9 @@
+{
+  "name": "astro-site",
+  "scripts": {
+    "build": "astro build"
+  },
+  "dependencies": {
+    "@astrojs/astro": "^4.0.0"
+  }
+}

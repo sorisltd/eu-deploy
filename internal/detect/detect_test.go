@@ -68,6 +68,22 @@ func TestDetectFixtures(t *testing.T) {
 			wantStartCommand: "npm run start",
 			warningSubstring: "leaner option",
 		},
+		{
+			name:             "astro",
+			wantFramework:    "astro",
+			wantBuildCommand: "npm run build",
+			wantOutputDir:    "dist",
+			wantStartCommand: "",
+			warningSubstring: "runtime.type: static",
+		},
+		{
+			name:             "vite-static",
+			wantFramework:    "vite-static",
+			wantBuildCommand: "npm run build",
+			wantOutputDir:    "dist",
+			wantStartCommand: "",
+			warningSubstring: "runtime.type: static",
+		},
 	}
 
 	for _, tc := range cases {
