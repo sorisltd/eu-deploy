@@ -10,7 +10,7 @@ Licensed under Apache-2.0. See LICENSE and NOTICE.
 - `eu deploy --target <provider>` prompts for missing server details, can seed env keys from `.env.example`, and saves the non-secret answers back to `eudeploy.yaml`.
 - `eu preflight` checks SSH, Docker, DNS, remote paths, ports, and TLS prerequisites before you deploy.
 - `eu bootstrap` prepares a fresh SSH-reachable VM with Docker and the directory layout that `eu-deploy` expects.
-- `eu analytics install` uploads the analytics worker to a remote VM, initializes analytics tables in the shared PostgreSQL container, installs cron jobs for log processing and daily aggregation, and creates a MaxMind env template for weekly GeoLite refreshes.
+- `eu analytics install` uploads the analytics worker to a remote VM, initializes analytics tables in the shared PostgreSQL container, installs cron jobs for log processing and daily aggregation, and creates both MaxMind env and `GeoIP.conf` templates for weekly GeoLite refreshes.
 - `eu build` runs the configured build command and packages the configured output folder.
 - `eu deploy` supports local Docker plus single-VM SSH deploys for `runtime.type: web` on Hetzner, Scaleway, and OVH, including shared PostgreSQL, release history, rollback, and an optional post-deploy command inside the app container.
 
@@ -37,7 +37,7 @@ The checked-in sample config lives at `templates/node-web.yaml`. This repository
   - processing Caddy JSON access logs every 5 minutes
   - aggregating the previous UTC day at `00:05`
   - refreshing GeoLite2 City and ASN once per week
-- Creates `<server_path>/analytics/maxmind/maxmind.env`; fill in `MAXMIND_ACCOUNT_ID` and `MAXMIND_LICENSE_KEY` before expecting GeoLite enrichment.
+- Creates `<server_path>/analytics/maxmind/maxmind.env` and `<server_path>/analytics/maxmind/GeoIP.conf`; fill in either config before expecting GeoLite enrichment. The refresh wrapper prefers `geoipupdate` when installed and otherwise falls back to the direct download flow.
 
 `eu preflight`
 - Checks whether the configured remote VM looks ready for deployment.

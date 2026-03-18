@@ -61,6 +61,7 @@ func renderAnalyticsInstallScript(opts RemoteOptions, remoteUploadPath string) s
 	refreshScriptPath := filepath.ToSlash(filepath.Join(scriptsDir, "analytics-refresh-maxmind.sh"))
 	workerPath := filepath.ToSlash(filepath.Join(analyticsBinDir, analyticsWorkerBinaryName))
 	maxmindEnvPath := filepath.ToSlash(filepath.Join(analyticsMaxmindDir, "maxmind.env"))
+	geoIPConfPath := filepath.ToSlash(filepath.Join(analyticsMaxmindDir, "GeoIP.conf"))
 	processLog := filepath.ToSlash(filepath.Join(analyticsLogsDir, "process.log"))
 	aggregateLog := filepath.ToSlash(filepath.Join(analyticsLogsDir, "aggregate.log"))
 	refreshLog := filepath.ToSlash(filepath.Join(analyticsLogsDir, "maxmind.log"))
@@ -87,9 +88,13 @@ func renderAnalyticsInstallScript(opts RemoteOptions, remoteUploadPath string) s
 		fmt.Sprintf("  cat > %s <<'EOF'\nMAXMIND_ACCOUNT_ID=\nMAXMIND_LICENSE_KEY=\nEOF", shellQuote(maxmindEnvPath)),
 		fmt.Sprintf("  chmod 600 %s", shellQuote(maxmindEnvPath)),
 		"fi",
+		fmt.Sprintf("if [ ! -f %s ]; then", shellQuote(geoIPConfPath)),
+		fmt.Sprintf("  cat > %s <<'EOF'\n%sEOF", shellQuote(geoIPConfPath), renderGeoIPUpdateConfigTemplate()),
+		fmt.Sprintf("  chmod 600 %s", shellQuote(geoIPConfPath)),
+		"fi",
 		fmt.Sprintf("cat > %s <<'EOF'\n%sEOF", shellQuote(processScriptPath), renderAnalyticsProcessWrapper(serverRoot, workerPath, analyticsSecret)),
 		fmt.Sprintf("cat > %s <<'EOF'\n%sEOF", shellQuote(aggregateScriptPath), renderAnalyticsAggregateWrapper(serverRoot, workerPath)),
-		fmt.Sprintf("cat > %s <<'EOF'\n%sEOF", shellQuote(refreshScriptPath), renderAnalyticsRefreshScript(analyticsMaxmindDir, maxmindEnvPath)),
+		fmt.Sprintf("cat > %s <<'EOF'\n%sEOF", shellQuote(refreshScriptPath), renderAnalyticsRefreshScript(analyticsMaxmindDir, maxmindEnvPath, geoIPConfPath)),
 		fmt.Sprintf("chmod 755 %s %s %s", shellQuote(processScriptPath), shellQuote(aggregateScriptPath), shellQuote(refreshScriptPath)),
 		fmt.Sprintf("%s init-schema --server-root %s", shellQuote(workerPath), shellQuote(serverRoot)),
 		"CURRENT_CRONTAB=\"$(crontab -l 2>/dev/null || true)\"",
@@ -109,6 +114,17 @@ func renderAnalyticsInstallScript(opts RemoteOptions, remoteUploadPath string) s
 	}
 
 	return strings.Join(lines, "\n")
+}
+
+func renderGeoIPUpdateConfigTemplate() string {
+	return strings.Join([]string{
+		"# GeoIP.conf file for `geoipupdate`.",
+		"# Fill in the MaxMind account details before running the refresh script.",
+		"AccountID 1316096",
+		"LicenseKey ",
+		"EditionIDs GeoLite2-ASN GeoLite2-City GeoLite2-Country",
+		"",
+	}, "\n")
 }
 
 func renderAnalyticsProcessWrapper(serverRoot, workerPath, secretPath string) string {
@@ -135,13 +151,20 @@ func renderAnalyticsAggregateWrapper(serverRoot, workerPath string) string {
 	}, "\n")
 }
 
-func renderAnalyticsRefreshScript(maxmindDir, envPath string) string {
+func renderAnalyticsRefreshScript(maxmindDir, envPath, geoIPConfPath string) string {
 	return strings.Join([]string{
 		"#!/usr/bin/env bash",
 		"set -euo pipefail",
+		fmt.Sprintf("geoip_conf=%s", shellQuote(geoIPConfPath)),
+		"if command -v geoipupdate >/dev/null 2>&1 && [ -f \"$geoip_conf\" ]; then",
+		"  if awk '$1 == \"AccountID\" && NF >= 2 && $2 != \"\" { have_account = 1 } $1 == \"LicenseKey\" && NF >= 2 && $2 != \"\" { have_license = 1 } END { exit !(have_account && have_license) }' \"$geoip_conf\"; then",
+		fmt.Sprintf("    mkdir -p %s", shellQuote(maxmindDir)),
+		"    exec geoipupdate -f \"$geoip_conf\" -d " + shellQuote(maxmindDir),
+		"  fi",
+		"fi",
 		fmt.Sprintf(". %s", shellQuote(envPath)),
 		"if [ -z \"${MAXMIND_ACCOUNT_ID:-}\" ] || [ -z \"${MAXMIND_LICENSE_KEY:-}\" ]; then",
-		"  echo 'MAXMIND_ACCOUNT_ID and MAXMIND_LICENSE_KEY are required in maxmind.env; skipping refresh.'",
+		"  echo 'MaxMind credentials are required in GeoIP.conf or maxmind.env; skipping refresh.'",
 		"  exit 0",
 		"fi",
 		"tmp_dir=\"$(mktemp -d)\"",

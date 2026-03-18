@@ -403,7 +403,8 @@ func main() {
 			fmt.Printf("OK Process cron: %s\n", filepath.ToSlash(filepath.Join(opts.RemoteServerPath, "scripts", "analytics-process.sh")))
 			fmt.Printf("OK Aggregate cron: %s\n", filepath.ToSlash(filepath.Join(opts.RemoteServerPath, "scripts", "analytics-aggregate.sh")))
 			fmt.Printf("OK MaxMind env template: %s\n", filepath.ToSlash(filepath.Join(opts.RemoteServerPath, "analytics", "maxmind", "maxmind.env")))
-			fmt.Println("NOTE Fill in analytics/maxmind/maxmind.env before expecting GeoLite enrichment.")
+			fmt.Printf("OK GeoIP Update config: %s\n", filepath.ToSlash(filepath.Join(opts.RemoteServerPath, "analytics", "maxmind", "GeoIP.conf")))
+			fmt.Println("NOTE Fill in analytics/maxmind/maxmind.env or analytics/maxmind/GeoIP.conf before expecting GeoLite enrichment.")
 			return nil
 		},
 	}
