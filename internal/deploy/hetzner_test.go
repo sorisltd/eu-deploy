@@ -8,7 +8,7 @@ import (
 )
 
 func TestRenderSiteCaddyfile(t *testing.T) {
-	got := renderSiteCaddyfile([]string{"example.com"}, "/", 3000)
+	got := renderSiteCaddyfile([]string{"example.com"}, "/", 3000, "example-app")
 
 	if !strings.Contains(got, "example.com {") {
 		t.Fatalf("missing site block:\n%s", got)
@@ -16,10 +16,13 @@ func TestRenderSiteCaddyfile(t *testing.T) {
 	if !strings.Contains(got, "reverse_proxy 127.0.0.1:3000") {
 		t.Fatalf("missing reverse_proxy:\n%s", got)
 	}
+	if !strings.Contains(got, "output file /var/log/caddy/example-app.access.log") {
+		t.Fatalf("missing analytics log output:\n%s", got)
+	}
 }
 
 func TestRenderSiteCaddyfileWithRoutePath(t *testing.T) {
-	got := renderSiteCaddyfile([]string{"example.com"}, "/book", 3002)
+	got := renderSiteCaddyfile([]string{"example.com"}, "/book", 3002, "example-app")
 
 	if !strings.Contains(got, "handle_path /book* {") {
 		t.Fatalf("missing handle_path block:\n%s", got)
@@ -30,7 +33,7 @@ func TestRenderSiteCaddyfileWithRoutePath(t *testing.T) {
 }
 
 func TestRenderSiteCaddyfileWithMultipleHostnames(t *testing.T) {
-	got := renderSiteCaddyfile([]string{"example.com", "www.example.com"}, "/", 3000)
+	got := renderSiteCaddyfile([]string{"example.com", "www.example.com"}, "/", 3000, "example-app")
 
 	if !strings.Contains(got, "example.com, www.example.com {") {
 		t.Fatalf("missing combined site block:\n%s", got)
@@ -41,10 +44,11 @@ func TestRenderSiteCaddyfileWithMultipleHostnames(t *testing.T) {
 }
 
 func TestRenderStaticSiteCaddyfile(t *testing.T) {
-	got := renderStaticSiteCaddyfile([]string{"example.com"}, "/", "/opt/eu-deploy/apps/example/static")
+	got := renderStaticSiteCaddyfile([]string{"example.com"}, "/", "/opt/eu-deploy/apps/example/static", "example-app")
 
 	for _, expected := range []string{
 		"example.com {",
+		"output file /var/log/caddy/example-app.access.log",
 		"root * /opt/eu-deploy/apps/example/static",
 		"try_files {path} /index.html",
 		"file_server",
@@ -56,7 +60,7 @@ func TestRenderStaticSiteCaddyfile(t *testing.T) {
 }
 
 func TestRenderStaticSiteCaddyfileWithRoutePath(t *testing.T) {
-	got := renderStaticSiteCaddyfile([]string{"example.com"}, "/docs", "/opt/eu-deploy/apps/example/static")
+	got := renderStaticSiteCaddyfile([]string{"example.com"}, "/docs", "/opt/eu-deploy/apps/example/static", "example-app")
 
 	if !strings.Contains(got, "handle_path /docs* {") {
 		t.Fatalf("missing static handle_path block:\n%s", got)

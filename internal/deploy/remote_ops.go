@@ -325,7 +325,7 @@ func renderRollbackRemoteScript(opts RemoteOptions, target ReleaseRecord) string
 	proxyConfigPath := filepath.ToSlash(filepath.Join(proxyRoot, "config"))
 	siteConfigPath := filepath.ToSlash(filepath.Join(proxySitesDir, opts.SiteConfigName))
 	primaryPort, secondaryPort := releaseSlotPorts(opts.ServicePort)
-	nextSiteCaddy := renderSiteCaddyfileWithUpstream(opts.Hostnames, opts.RoutePath, "127.0.0.1:${TARGET_PORT}")
+	nextSiteCaddy := renderSiteCaddyfileWithUpstream(opts.Hostnames, opts.RoutePath, "127.0.0.1:${TARGET_PORT}", opts.AnalyticsLogName)
 	cleanup := renderReleaseCleanupCommands(opts, "history_limit")
 
 	lines := []string{
@@ -402,7 +402,7 @@ func renderRollbackStaticRemoteScript(opts RemoteOptions, target ReleaseRecord) 
 	siteConfigPath := filepath.ToSlash(filepath.Join(proxySitesDir, opts.SiteConfigName))
 	targetRoot := staticReleaseRootPath(opts, target.ID)
 	staticRootPath := staticCurrentRootPath(opts)
-	siteCaddy := renderStaticSiteCaddyfile(opts.Hostnames, opts.RoutePath, staticRootPath)
+	siteCaddy := renderStaticSiteCaddyfile(opts.Hostnames, opts.RoutePath, staticRootPath, opts.AnalyticsLogName)
 	cleanup := renderReleaseCleanupCommands(opts, "history_limit")
 
 	lines := []string{

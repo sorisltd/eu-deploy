@@ -26,6 +26,7 @@ const (
 
 type RemoteOptions struct {
 	Provider            RemoteTarget
+	ProjectName         string
 	RuntimeType         string
 	WorkDir             string
 	ArtifactPath        string
@@ -48,6 +49,7 @@ type RemoteOptions struct {
 	Hostname            string
 	Hostnames           []string
 	RoutePath           string
+	AnalyticsLogName    string
 	HealthcheckPath     string
 	SiteConfigName      string
 	SharedDatabase      *SharedDatabaseOptions
@@ -433,7 +435,7 @@ func prepareHetznerBundle(opts RemoteOptions) (string, error) {
 		return "", err
 	}
 
-	siteCaddy := renderSiteCaddyfile(opts.Hostnames, opts.RoutePath, opts.ServicePort)
+	siteCaddy := renderSiteCaddyfile(opts.Hostnames, opts.RoutePath, opts.ServicePort, opts.AnalyticsLogName)
 	if err := os.WriteFile(filepath.Join(bundleDir, "site.caddy"), []byte(siteCaddy), 0o644); err != nil {
 		os.RemoveAll(bundleDir)
 		return "", err
@@ -536,8 +538,10 @@ func renderHetznerDeployScript(opts RemoteOptions) string {
 	primaryPort, secondaryPort := releaseSlotPorts(opts.ServicePort)
 	imageRepo := releaseImageRepository(opts.ImageTag)
 	releaseImage := releaseImageTag(opts, opts.ReleaseID)
-	nextSiteCaddy := renderSiteCaddyfileWithUpstream(opts.Hostnames, opts.RoutePath, "127.0.0.1:${TARGET_PORT}")
+	nextSiteCaddy := renderSiteCaddyfileWithUpstream(opts.Hostnames, opts.RoutePath, "127.0.0.1:${TARGET_PORT}", opts.AnalyticsLogName)
 	cleanup := renderReleaseCleanupCommands(opts, "history_limit")
+	metadataPath := filepath.ToSlash(filepath.Join(opts.RemoteAppPath, "analytics-project.json"))
+	metadataContents := renderAnalyticsProjectMetadata(opts)
 
 	lines := []string{
 		"set -euo pipefail",
@@ -566,6 +570,8 @@ func renderHetznerDeployScript(opts RemoteOptions) string {
 		"rm -f app.env.nonempty",
 		fmt.Sprintf("mkdir -p %s", shellQuote(releasesPath)),
 		fmt.Sprintf("mkdir -p %s", shellQuote(releaseDir)),
+		fmt.Sprintf("mkdir -p %s", shellQuote(filepath.Dir(metadataPath))),
+		fmt.Sprintf("cat > %s <<'EOF'\n%sEOF", shellQuote(metadataPath), metadataContents),
 		fmt.Sprintf("cp artifact.tar.gz %s", shellQuote(filepath.ToSlash(filepath.Join(releaseDir, "artifact.tar.gz")))),
 		fmt.Sprintf("cp Dockerfile %s", shellQuote(filepath.ToSlash(filepath.Join(releaseDir, "Dockerfile")))),
 		fmt.Sprintf("cp app.env %s", shellQuote(filepath.ToSlash(filepath.Join(releaseDir, "app.env")))),
@@ -696,8 +702,10 @@ func renderStaticHetznerDeployScript(opts RemoteOptions) string {
 	currentReleaseFile := currentReleasePath(opts)
 	staticRootPath := staticCurrentRootPath(opts)
 	releaseStaticRoot := staticReleaseRootPath(opts, opts.ReleaseID)
-	siteCaddy := renderStaticSiteCaddyfile(opts.Hostnames, opts.RoutePath, staticRootPath)
+	siteCaddy := renderStaticSiteCaddyfile(opts.Hostnames, opts.RoutePath, staticRootPath, opts.AnalyticsLogName)
 	cleanup := renderReleaseCleanupCommands(opts, "history_limit")
+	metadataPath := filepath.ToSlash(filepath.Join(opts.RemoteAppPath, "analytics-project.json"))
+	metadataContents := renderAnalyticsProjectMetadata(opts)
 
 	lines := []string{
 		"set -euo pipefail",
@@ -712,6 +720,8 @@ func renderStaticHetznerDeployScript(opts RemoteOptions) string {
 		"fi",
 		fmt.Sprintf("cat > %s <<'EOF'\n%sEOF", shellQuote(rootCaddyPath), renderRootCaddyfile()),
 		fmt.Sprintf("mkdir -p %s", shellQuote(releasesPath)),
+		fmt.Sprintf("mkdir -p %s", shellQuote(filepath.Dir(metadataPath))),
+		fmt.Sprintf("cat > %s <<'EOF'\n%sEOF", shellQuote(metadataPath), metadataContents),
 		fmt.Sprintf("rm -rf %s", shellQuote(releaseDir)),
 		fmt.Sprintf("mkdir -p %s", shellQuote(releaseDir)),
 		fmt.Sprintf("cp artifact.tar.gz %s", shellQuote(filepath.ToSlash(filepath.Join(releaseDir, "artifact.tar.gz")))),
@@ -852,11 +862,11 @@ func renderSharedDatabaseSQL(opts SharedDatabaseOptions) string {
 	}, "\n")
 }
 
-func renderSiteCaddyfile(hostnames []string, routePath string, servicePort int) string {
-	return renderSiteCaddyfileWithUpstream(hostnames, routePath, fmt.Sprintf("127.0.0.1:%d", servicePort))
+func renderSiteCaddyfile(hostnames []string, routePath string, servicePort int, analyticsLogName string) string {
+	return renderSiteCaddyfileWithUpstream(hostnames, routePath, fmt.Sprintf("127.0.0.1:%d", servicePort), analyticsLogName)
 }
 
-func renderStaticSiteCaddyfile(hostnames []string, routePath, rootPath string) string {
+func renderStaticSiteCaddyfile(hostnames []string, routePath, rootPath, analyticsLogName string) string {
 	hostLabel := formatCaddySiteHosts(hostnames)
 	routePath = normalizeRoutePath(routePath)
 	rootPath = strings.TrimSpace(rootPath)
@@ -865,6 +875,7 @@ func renderStaticSiteCaddyfile(hostnames []string, routePath, rootPath string) s
 		fmt.Sprintf("%s {", hostLabel),
 		"  encode zstd gzip",
 	}
+	lines = append(lines, renderAnalyticsLogBlock(analyticsLogName)...)
 
 	if routePath == "/" {
 		lines = append(lines,
@@ -887,7 +898,7 @@ func renderStaticSiteCaddyfile(hostnames []string, routePath, rootPath string) s
 	return strings.Join(lines, "\n") + "\n"
 }
 
-func renderSiteCaddyfileWithUpstream(hostnames []string, routePath, upstream string) string {
+func renderSiteCaddyfileWithUpstream(hostnames []string, routePath, upstream, analyticsLogName string) string {
 	hostLabel := formatCaddySiteHosts(hostnames)
 	routePath = normalizeRoutePath(routePath)
 	upstream = strings.TrimSpace(upstream)
@@ -896,6 +907,7 @@ func renderSiteCaddyfileWithUpstream(hostnames []string, routePath, upstream str
 		fmt.Sprintf("%s {", hostLabel),
 		"  encode zstd gzip",
 	}
+	lines = append(lines, renderAnalyticsLogBlock(analyticsLogName)...)
 
 	if routePath == "/" {
 		lines = append(lines, fmt.Sprintf("  reverse_proxy %s", upstream))
@@ -910,6 +922,42 @@ func renderSiteCaddyfileWithUpstream(hostnames []string, routePath, upstream str
 	lines = append(lines, "}")
 
 	return strings.Join(lines, "\n") + "\n"
+}
+
+func renderAnalyticsLogBlock(logName string) []string {
+	path := analyticsLogPath(logName)
+	return []string{
+		"  log {",
+		fmt.Sprintf("    output file %s {", path),
+		"      roll_size 50MiB",
+		"      roll_keep 5",
+		"    }",
+		"    format json",
+		"  }",
+	}
+}
+
+func renderAnalyticsProjectMetadata(opts RemoteOptions) string {
+	projectName := strings.TrimSpace(opts.ProjectName)
+	if projectName == "" {
+		projectName = filepath.Base(opts.RemoteAppPath)
+	}
+
+	logPath := analyticsLogPath(opts.AnalyticsLogName)
+	var b strings.Builder
+	b.WriteString("{\n")
+	b.WriteString(fmt.Sprintf("  \"projectName\": %q,\n", projectName))
+	b.WriteString("  \"hostnames\": [")
+	for index, hostname := range opts.Hostnames {
+		if index > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString(fmt.Sprintf("%q", hostname))
+	}
+	b.WriteString("],\n")
+	b.WriteString(fmt.Sprintf("  \"logPath\": %q\n", logPath))
+	b.WriteString("}\n")
+	return b.String()
 }
 
 func formatCaddySiteHosts(hostnames []string) string {
@@ -1340,6 +1388,42 @@ func BuildHetznerSiteConfigName(hostname string) string {
 		name = "site"
 	}
 	return name + ".caddy"
+}
+
+func BuildAnalyticsLogName(projectName string) string {
+	name := strings.TrimSpace(projectName)
+	if name == "" {
+		return "site"
+	}
+
+	var b strings.Builder
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r)
+		case r >= 'A' && r <= 'Z':
+			b.WriteRune(r + ('a' - 'A'))
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r == '-' || r == '_':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('-')
+		}
+	}
+
+	sanitized := strings.Trim(b.String(), "-_")
+	for strings.Contains(sanitized, "--") {
+		sanitized = strings.ReplaceAll(sanitized, "--", "-")
+	}
+	if sanitized == "" {
+		sanitized = "site"
+	}
+	return sanitized
+}
+
+func analyticsLogPath(logName string) string {
+	return filepath.ToSlash(filepath.Join("/var/log/caddy", BuildAnalyticsLogName(logName)+".access.log"))
 }
 
 func sharedProxyRoot(serverPath string) string {

@@ -10,6 +10,7 @@ Licensed under Apache-2.0. See LICENSE and NOTICE.
 - `eu deploy --target <provider>` prompts for missing server details, can seed env keys from `.env.example`, and saves the non-secret answers back to `eudeploy.yaml`.
 - `eu preflight` checks SSH, Docker, DNS, remote paths, ports, and TLS prerequisites before you deploy.
 - `eu bootstrap` prepares a fresh SSH-reachable VM with Docker and the directory layout that `eu-deploy` expects.
+- `eu analytics install` uploads the analytics worker to a remote VM, initializes analytics tables in the shared PostgreSQL container, installs cron jobs for log processing and daily aggregation, and creates a MaxMind env template for weekly GeoLite refreshes.
 - `eu build` runs the configured build command and packages the configured output folder.
 - `eu deploy` supports local Docker plus single-VM SSH deploys for `runtime.type: web` on Hetzner, Scaleway, and OVH, including shared PostgreSQL, release history, rollback, and an optional post-deploy command inside the app container.
 
@@ -28,6 +29,15 @@ The checked-in sample config lives at `templates/node-web.yaml`. This repository
 `eu bootstrap`
 - Connects to the configured remote VM over SSH and prepares it for `eu-deploy`.
 - Use this first on a fresh server. It can install Docker, create the expected directories, optionally configure UFW and fail2ban, and start a shared PostgreSQL container when `database.mode: shared` is configured.
+
+`eu analytics install`
+- Connects to the configured remote VM over SSH and installs the analytics worker plus wrapper scripts under `<server_path>/analytics` and `<server_path>/scripts`.
+- Initializes `analytics_projects`, `analytics_buffer`, `analytics_daily`, and `analytics_processor_state` in the shared PostgreSQL container on that VM.
+- Installs cron jobs for:
+  - processing Caddy JSON access logs every 5 minutes
+  - aggregating the previous UTC day at `00:05`
+  - refreshing GeoLite2 City and ASN once per week
+- Creates `<server_path>/analytics/maxmind/maxmind.env`; fill in `MAXMIND_ACCOUNT_ID` and `MAXMIND_LICENSE_KEY` before expecting GeoLite enrichment.
 
 `eu preflight`
 - Checks whether the configured remote VM looks ready for deployment.
@@ -211,6 +221,7 @@ The remote targets upload the build artifact, generate a remote Docker image, ru
 - one Caddy container owns ports `80/443`
 - each app deploy uses two loopback ports for blue/green style cutover
 - each deploy writes one per-site Caddy snippet keyed by hostname
+- each deploy also writes a project-scoped JSON access log block to `/var/log/caddy/<project>.access.log`
 - each deploy keeps the last three release images and a small release history for rollback
 - optional: one shared PostgreSQL container serves multiple apps, each with its own database and role
 - optional: a post-deploy hook can run inside the app container before deploy healthcheck succeeds

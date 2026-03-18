@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -328,6 +329,89 @@ func main() {
 	addJSONFlag(bootstrapCmd)
 	addNoPromptFlag(bootstrapCmd)
 
+	analyticsCmd := &cobra.Command{
+		Use:   "analytics",
+		Short: "Manage the remote analytics pipeline",
+	}
+
+	analyticsInstallCmd := &cobra.Command{
+		Use:   "install",
+		Short: "Install the remote analytics worker, schema, and cron jobs",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			jsonMode := commandJSONEnabled(cmd)
+			requestedTarget, err := cmd.Flags().GetString("target")
+			if err != nil {
+				return err
+			}
+
+			cfg, cfgPath, wd, err := loadConfigFromWorkingDir()
+			if err != nil {
+				return err
+			}
+			target := resolveTarget(cfg, requestedTarget, "hetzner")
+			if !deploy.IsRemoteTarget(target) {
+				return fmt.Errorf("unsupported target: %s", target)
+			}
+
+			remoteTarget, err := deploy.ParseRemoteTarget(target)
+			if err != nil {
+				return err
+			}
+			if commandShouldPrompt(cmd) {
+				prepared, err := deploy.PrepareRemoteConfig(&cfg, wd, remoteTarget, deploy.PrepareRemoteConfigOptions{})
+				if err != nil {
+					return err
+				}
+				if prepared.Changed {
+					if err := config.WriteYAML(cfgPath, cfg); err != nil {
+						return err
+					}
+					fmt.Printf("OK Updated %s\n", filepath.Base(cfgPath))
+				}
+			}
+
+			opts, err := buildAnalyticsInstallOptions(cfg, remoteTarget)
+			if err != nil {
+				return err
+			}
+			binaryPath, cleanup, err := buildAnalyticsWorkerBinary()
+			if err != nil {
+				return err
+			}
+			defer cleanup()
+
+			if !jsonMode {
+				fmt.Printf("Installing analytics on %s@%s...\n", opts.RemoteUser, opts.RemoteHost)
+			}
+			if err := deploy.InstallRemoteAnalytics(opts, binaryPath); err != nil {
+				return err
+			}
+
+			if jsonMode {
+				return emitJSONSuccess(cmd, string(remoteTarget), map[string]any{
+					"host":               opts.RemoteHost,
+					"user":               opts.RemoteUser,
+					"serverRoot":         opts.RemoteServerPath,
+					"workerPath":         filepath.ToSlash(filepath.Join(opts.RemoteServerPath, "analytics", "bin", "eu-analytics-worker")),
+					"processScript":      filepath.ToSlash(filepath.Join(opts.RemoteServerPath, "scripts", "analytics-process.sh")),
+					"aggregateScript":    filepath.ToSlash(filepath.Join(opts.RemoteServerPath, "scripts", "analytics-aggregate.sh")),
+					"maxmindRefreshPath": filepath.ToSlash(filepath.Join(opts.RemoteServerPath, "scripts", "analytics-refresh-maxmind.sh")),
+				})
+			}
+
+			fmt.Printf("OK Analytics worker: %s\n", filepath.ToSlash(filepath.Join(opts.RemoteServerPath, "analytics", "bin", "eu-analytics-worker")))
+			fmt.Printf("OK Process cron: %s\n", filepath.ToSlash(filepath.Join(opts.RemoteServerPath, "scripts", "analytics-process.sh")))
+			fmt.Printf("OK Aggregate cron: %s\n", filepath.ToSlash(filepath.Join(opts.RemoteServerPath, "scripts", "analytics-aggregate.sh")))
+			fmt.Printf("OK MaxMind env template: %s\n", filepath.ToSlash(filepath.Join(opts.RemoteServerPath, "analytics", "maxmind", "maxmind.env")))
+			fmt.Println("NOTE Fill in analytics/maxmind/maxmind.env before expecting GeoLite enrichment.")
+			return nil
+		},
+	}
+	analyticsInstallCmd.Flags().String("target", "", "Analytics install target (hetzner|scaleway|ovh)")
+	addJSONFlag(analyticsInstallCmd)
+	addNoPromptFlag(analyticsInstallCmd)
+	analyticsCmd.AddCommand(analyticsInstallCmd)
+
 	logsCmd := &cobra.Command{
 		Use:   "logs",
 		Short: "Stream remote container logs",
@@ -603,7 +687,7 @@ func main() {
 	addJSONFlag(rollbackCmd)
 	addNoPromptFlag(rollbackCmd)
 
-	rootCmd.AddCommand(initCmd, buildCmd, deployCmd, preflightCmd, bootstrapCmd, logsCmd, releasesCmd, destroyCmd, rollbackCmd)
+	rootCmd.AddCommand(initCmd, buildCmd, deployCmd, preflightCmd, bootstrapCmd, analyticsCmd, logsCmd, releasesCmd, destroyCmd, rollbackCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		if argsWantJSON(os.Args[1:]) {
@@ -893,6 +977,7 @@ func buildRemoteOptions(cfg config.Config, wd string, target deploy.RemoteTarget
 	hostnames := resolveRouteHostnames(cfg)
 	opts := deploy.RemoteOptions{
 		Provider:           target,
+		ProjectName:        cfg.Project.Name,
 		RuntimeType:        config.NormalizeRuntimeType(cfg.Runtime),
 		WorkDir:            wd,
 		ArtifactSHA:        artifactSHA,
@@ -912,6 +997,7 @@ func buildRemoteOptions(cfg config.Config, wd string, target deploy.RemoteTarget
 		Hostname:           resolveRouteHostname(cfg),
 		Hostnames:          hostnames,
 		RoutePath:          cfg.Routes[0].Path,
+		AnalyticsLogName:   deploy.BuildAnalyticsLogName(cfg.Project.Name),
 		HealthcheckPath:    cfg.Runtime.Healthcheck.Path,
 		SiteConfigName:     deploy.BuildHetznerSiteConfigName(cfg.Routes[0].Hostname),
 		KeepReleases:       3,
@@ -1024,5 +1110,53 @@ func buildBootstrapOptions(cfg config.Config, target deploy.RemoteTarget) (deplo
 		InstallUFW:       true,
 		InstallFail2ban:  false,
 		SharedDatabase:   sharedDatabase,
+	}, nil
+}
+
+func buildAnalyticsInstallOptions(cfg config.Config, target deploy.RemoteTarget) (deploy.RemoteOptions, error) {
+	spec, ok := resolveRemoteProviderSpec(cfg, target)
+	if !ok || spec == nil {
+		return deploy.RemoteOptions{}, fmt.Errorf("%s config is missing", target)
+	}
+
+	serverPath := strings.TrimSpace(spec.ServerPath)
+	if serverPath == "" && strings.TrimSpace(spec.AppPath) != "" {
+		serverPath = filepath.ToSlash(filepath.Clean(filepath.Dir(spec.AppPath)))
+	}
+	if serverPath == "" {
+		if strings.TrimSpace(spec.User) == "" || strings.TrimSpace(spec.User) == "root" {
+			serverPath = "/opt/eu-deploy"
+		} else {
+			serverPath = filepath.ToSlash(filepath.Join("/home", spec.User, "eu-deploy"))
+		}
+	}
+
+	return deploy.RemoteOptions{
+		Provider:         target,
+		RemoteHost:       spec.Host,
+		RemoteUser:       spec.User,
+		RemotePort:       spec.Port,
+		SSHKeyPath:       spec.SSHKeyPath,
+		RemoteServerPath: serverPath,
+	}, nil
+}
+
+func buildAnalyticsWorkerBinary() (string, func(), error) {
+	dir, err := os.MkdirTemp("", "eu-analytics-worker-*")
+	if err != nil {
+		return "", nil, err
+	}
+
+	outputPath := filepath.Join(dir, "eu-analytics-worker")
+	cmd := exec.Command("go", "build", "-o", outputPath, "./cmd/eu-analytics-worker")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		_ = os.RemoveAll(dir)
+		return "", nil, err
+	}
+
+	return outputPath, func() {
+		_ = os.RemoveAll(dir)
 	}, nil
 }
