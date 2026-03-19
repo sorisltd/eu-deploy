@@ -87,20 +87,45 @@ func renderDisableRemoteMaintenanceScript(opts RemoteOptions) string {
 	statePath := maintenanceStatePath(opts)
 	maintenanceRoot := maintenanceRootPath(opts)
 
-	var siteCaddy string
-	if isStaticRuntime(opts.RuntimeType) {
-		siteCaddy = renderStaticSiteCaddyfile(opts.Hostnames, opts.RoutePath, staticCurrentRootPath(opts), opts.AnalyticsLogName)
-	} else {
-		siteCaddy = renderSiteCaddyfile(opts.Hostnames, opts.RoutePath, opts.ServicePort, opts.AnalyticsLogName)
-	}
-
 	lines := []string{
 		"set -euo pipefail",
 		fmt.Sprintf("rm -f %s", shellQuote(statePath)),
 		fmt.Sprintf("rm -rf %s", shellQuote(maintenanceRoot)),
 		fmt.Sprintf("cat > %s <<'EOF'\n%sEOF", shellQuote(rootCaddyPath), renderRootCaddyfile()),
-		fmt.Sprintf("cat > %s <<'EOF'\n%sEOF", shellQuote(siteConfigPath), siteCaddy),
 	}
+
+	if isStaticRuntime(opts.RuntimeType) {
+		siteCaddy := renderStaticSiteCaddyfile(opts.Hostnames, opts.RoutePath, staticCurrentRootPath(opts), opts.AnalyticsLogName)
+		lines = append(lines, fmt.Sprintf("cat > %s <<'EOF'\n%sEOF", shellQuote(siteConfigPath), siteCaddy))
+	} else {
+		primaryPort, secondaryPort := releaseSlotPorts(opts.ServicePort)
+		liveSiteCaddy := renderSiteCaddyfileWithUpstream(opts.Hostnames, opts.RoutePath, "127.0.0.1:${TARGET_PORT}", opts.AnalyticsLogName)
+		lines = append(lines,
+			fmt.Sprintf("PRIMARY_PORT=%d", primaryPort),
+			fmt.Sprintf("SECONDARY_PORT=%d", secondaryPort),
+			fmt.Sprintf("ACTIVE_SLOT_FILE=%s", shellQuote(activeSlotPath(opts))),
+			fmt.Sprintf("APP_CONTAINER_BASE=%s", shellQuote(opts.AppContainerName)),
+			"active_slot=''",
+			`if [ -f "$ACTIVE_SLOT_FILE" ]; then active_slot="$(tr -d '\r\n' < "$ACTIVE_SLOT_FILE")"; fi`,
+			`legacy_container="$APP_CONTAINER_BASE"`,
+			`if [ -z "$active_slot" ] && docker ps --format '{{.Names}}' | grep -Fx -- "${APP_CONTAINER_BASE}-a" >/dev/null 2>&1; then`,
+			`  active_slot='a'`,
+			"fi",
+			`if [ -z "$active_slot" ] && docker ps --format '{{.Names}}' | grep -Fx -- "${APP_CONTAINER_BASE}-b" >/dev/null 2>&1; then`,
+			`  active_slot='b'`,
+			"fi",
+			`if [ -z "$active_slot" ] && docker ps --format '{{.Names}}' | grep -Fx -- "$legacy_container" >/dev/null 2>&1; then`,
+			`  active_slot='a'`,
+			"fi",
+			"if [ \"$active_slot\" = 'b' ]; then",
+			"  TARGET_PORT=$SECONDARY_PORT",
+			"else",
+			"  TARGET_PORT=$PRIMARY_PORT",
+			"fi",
+			fmt.Sprintf("cat > %s <<EOF\n%sEOF", shellQuote(siteConfigPath), liveSiteCaddy),
+		)
+	}
+
 	lines = append(lines, renderProxyReloadCommands(opts, rootCaddyPath, proxySitesDir, proxyDataPath, proxyConfigPath)...)
 
 	return strings.Join(lines, "\n")

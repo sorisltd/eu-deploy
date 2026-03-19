@@ -418,8 +418,12 @@ func TestRenderDisableRemoteMaintenanceScriptRestoresLiveSite(t *testing.T) {
 	for _, expected := range []string{
 		`rm -f '/opt/eu-deploy/apps/massage/maintenance.json'`,
 		`rm -rf '/opt/eu-deploy/apps/massage/maintenance'`,
+		`PRIMARY_PORT=3001`,
+		`SECONDARY_PORT=3002`,
+		`if [ "$active_slot" = 'b' ]; then`,
+		`TARGET_PORT=$SECONDARY_PORT`,
 		`output file /var/log/caddy/massage.access.log`,
-		`reverse_proxy 127.0.0.1:3001`,
+		`reverse_proxy 127.0.0.1:${TARGET_PORT}`,
 	} {
 		if !strings.Contains(got, expected) {
 			t.Fatalf("disable maintenance script missing %q:\n%s", expected, got)
