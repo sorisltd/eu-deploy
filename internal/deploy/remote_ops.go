@@ -367,19 +367,10 @@ func renderRollbackRemoteScript(opts RemoteOptions, target ReleaseRecord) string
 		"  sleep 2",
 		"done",
 		"TARGET_PORT=\"$next_port\"",
-		fmt.Sprintf("cat > %s <<EOF\n%sEOF", shellQuote(siteConfigPath), nextSiteCaddy),
-		fmt.Sprintf("if docker ps --format '{{.Names}}' | grep -Fx -- %s >/dev/null 2>&1; then", shellQuote(opts.ProxyContainerName)),
-		fmt.Sprintf("  docker exec %s caddy reload --config /etc/caddy/Caddyfile >/dev/null", shellQuote(opts.ProxyContainerName)),
-		"else",
-		"  docker pull caddy:2 >/dev/null",
-		fmt.Sprintf("  docker rm -f %s >/dev/null 2>&1 || true", shellQuote(opts.ProxyContainerName)),
-		fmt.Sprintf("  docker run -d --restart unless-stopped --network host --name %s -v %s:/etc/caddy/Caddyfile:ro -v %s:/etc/caddy/sites:ro -v %s:/data -v %s:/config caddy:2 >/dev/null",
-			shellQuote(opts.ProxyContainerName),
-			shellQuote(rootCaddyPath),
-			shellQuote(proxySitesDir),
-			shellQuote(proxyDataPath),
-			shellQuote(proxyConfigPath)),
-		"fi",
+	}
+	lines = append(lines, renderMaintenanceAwareSiteConfigCommands(opts, siteConfigPath, nextSiteCaddy)...)
+	lines = append(lines, renderProxyReloadCommands(opts, rootCaddyPath, proxySitesDir, proxyDataPath, proxyConfigPath)...)
+	lines = append(lines,
 		"if docker ps --format '{{.Names}}' | grep -Fx -- \"$old_container\" >/dev/null 2>&1; then",
 		"  docker rm -f \"$old_container\" >/dev/null 2>&1 || true",
 		"fi",
@@ -389,7 +380,7 @@ func renderRollbackRemoteScript(opts RemoteOptions, target ReleaseRecord) string
 		fmt.Sprintf("history_limit=%d", releaseKeepCount(opts)),
 		"if [ -f \"$HISTORY_FILE\" ]; then tail -n \"$history_limit\" \"$HISTORY_FILE\" > \"$HISTORY_FILE.tmp\" && mv \"$HISTORY_FILE.tmp\" \"$HISTORY_FILE\"; fi",
 		cleanup,
-	}
+	)
 	return strings.Join(lines, "\n")
 }
 
@@ -419,26 +410,17 @@ func renderRollbackStaticRemoteScript(opts RemoteOptions, target ReleaseRecord) 
 		fmt.Sprintf("rm -rf %s", shellQuote(staticRootPath)),
 		fmt.Sprintf("ln -sfn \"$TARGET_ROOT\" %s", shellQuote(staticRootPath)),
 		fmt.Sprintf("cat > %s <<'EOF'\n%sEOF", shellQuote(rootCaddyPath), renderRootCaddyfile()),
-		fmt.Sprintf("cat > %s <<EOF\n%sEOF", shellQuote(siteConfigPath), siteCaddy),
-		fmt.Sprintf("if docker ps --format '{{.Names}}' | grep -Fx -- %s >/dev/null 2>&1; then", shellQuote(opts.ProxyContainerName)),
-		fmt.Sprintf("  docker exec %s caddy reload --config /etc/caddy/Caddyfile >/dev/null", shellQuote(opts.ProxyContainerName)),
-		"else",
-		"  docker pull caddy:2 >/dev/null",
-		fmt.Sprintf("  docker rm -f %s >/dev/null 2>&1 || true", shellQuote(opts.ProxyContainerName)),
-		fmt.Sprintf("  docker run -d --restart unless-stopped --network host --name %s -v %s:/etc/caddy/Caddyfile:ro -v %s:/etc/caddy/sites:ro -v %s:/data -v %s:/config caddy:2 >/dev/null",
-			shellQuote(opts.ProxyContainerName),
-			shellQuote(rootCaddyPath),
-			shellQuote(proxySitesDir),
-			shellQuote(proxyDataPath),
-			shellQuote(proxyConfigPath)),
-		"fi",
+	}
+	lines = append(lines, renderMaintenanceAwareSiteConfigCommands(opts, siteConfigPath, siteCaddy)...)
+	lines = append(lines, renderProxyReloadCommands(opts, rootCaddyPath, proxySitesDir, proxyDataPath, proxyConfigPath)...)
+	lines = append(lines,
 		"printf '%s\\n' \"$TARGET_RELEASE\" > \"$CURRENT_RELEASE_FILE\"",
 		fmt.Sprintf("printf '%%s\\t%%s\\t%%s\\t%%s\\t%%s\\t%%s\\n' \"$TARGET_RELEASE\" 'static' '0' %s \"$TARGET_SHA\" \"$(date -u +%%Y-%%m-%%dT%%H:%%M:%%SZ)\" >> \"$HISTORY_FILE\"",
 			shellQuote(staticReleaseMarker(target.ID))),
 		fmt.Sprintf("history_limit=%d", releaseKeepCount(opts)),
 		"if [ -f \"$HISTORY_FILE\" ]; then tail -n \"$history_limit\" \"$HISTORY_FILE\" > \"$HISTORY_FILE.tmp\" && mv \"$HISTORY_FILE.tmp\" \"$HISTORY_FILE\"; fi",
 		cleanup,
-	}
+	)
 
 	return strings.Join(lines, "\n")
 }

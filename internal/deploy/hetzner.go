@@ -650,23 +650,10 @@ func renderHetznerDeployScript(opts RemoteOptions) string {
 		"  sleep 2",
 		"done",
 		"TARGET_PORT=\"$next_port\"",
-		fmt.Sprintf("cat > %s <<EOF\n%sEOF", shellQuote(siteConfigPath), nextSiteCaddy),
-		fmt.Sprintf("if docker ps --format '{{.Names}}' | grep -Fx -- %s >/dev/null 2>&1; then", shellQuote(opts.ProxyContainerName)),
-		fmt.Sprintf("  docker exec %s caddy reload --config /etc/caddy/Caddyfile >/dev/null", shellQuote(opts.ProxyContainerName)),
-		"elif CADDY_CONTAINER=$(docker ps --filter 'ancestor=caddy:2' --format '{{.Names}}' | head -1) && [ -n \"$CADDY_CONTAINER\" ]; then",
-		"  docker exec \"$CADDY_CONTAINER\" caddy reload --config /etc/caddy/Caddyfile >/dev/null 2>&1 || true",
-		"else",
-		"  docker pull caddy:2 >/dev/null",
-		fmt.Sprintf("  docker rm -f %s >/dev/null 2>&1 || true", shellQuote(opts.ProxyContainerName)),
-		fmt.Sprintf("  mkdir -p %s", shellQuote("/var/log/caddy")),
-		fmt.Sprintf("  docker run -d --restart unless-stopped --network host --name %s -v %s:/etc/caddy/Caddyfile:ro -v %s:/etc/caddy/sites:ro -v %s:/data -v %s:/config -v %s:/var/log/caddy caddy:2 >/dev/null",
-			shellQuote(opts.ProxyContainerName),
-			shellQuote(rootCaddyPath),
-			shellQuote(proxySitesDir),
-			shellQuote(proxyDataPath),
-			shellQuote(proxyConfigPath),
-			shellQuote("/var/log/caddy")),
-		"fi",
+	)
+	lines = append(lines, renderMaintenanceAwareSiteConfigCommands(opts, siteConfigPath, nextSiteCaddy)...)
+	lines = append(lines, renderProxyReloadCommands(opts, rootCaddyPath, proxySitesDir, proxyDataPath, proxyConfigPath)...)
+	lines = append(lines,
 		"if docker ps --format '{{.Names}}' | grep -Fx -- \"$old_container\" >/dev/null 2>&1; then",
 		"  docker rm -f \"$old_container\" >/dev/null 2>&1 || true",
 		"fi",
@@ -734,23 +721,10 @@ func renderStaticHetznerDeployScript(opts RemoteOptions) string {
 		"fi",
 		fmt.Sprintf("rm -rf %s", shellQuote(staticRootPath)),
 		fmt.Sprintf("ln -sfn %s %s", shellQuote(releaseStaticRoot), shellQuote(staticRootPath)),
-		fmt.Sprintf("cat > %s <<EOF\n%sEOF", shellQuote(siteConfigPath), siteCaddy),
-		fmt.Sprintf("if docker ps --format '{{.Names}}' | grep -Fx -- %s >/dev/null 2>&1; then", shellQuote(opts.ProxyContainerName)),
-		fmt.Sprintf("  docker exec %s caddy reload --config /etc/caddy/Caddyfile >/dev/null", shellQuote(opts.ProxyContainerName)),
-		"elif CADDY_CONTAINER=$(docker ps --filter 'ancestor=caddy:2' --format '{{.Names}}' | head -1) && [ -n \"$CADDY_CONTAINER\" ]; then",
-		"  docker exec \"$CADDY_CONTAINER\" caddy reload --config /etc/caddy/Caddyfile >/dev/null 2>&1 || true",
-		"else",
-		"  docker pull caddy:2 >/dev/null",
-		fmt.Sprintf("  docker rm -f %s >/dev/null 2>&1 || true", shellQuote(opts.ProxyContainerName)),
-		fmt.Sprintf("  mkdir -p %s", shellQuote("/var/log/caddy")),
-		fmt.Sprintf("  docker run -d --restart unless-stopped --network host --name %s -v %s:/etc/caddy/Caddyfile:ro -v %s:/etc/caddy/sites:ro -v %s:/data -v %s:/config -v %s:/var/log/caddy caddy:2 >/dev/null",
-			shellQuote(opts.ProxyContainerName),
-			shellQuote(rootCaddyPath),
-			shellQuote(proxySitesDir),
-			shellQuote(proxyDataPath),
-			shellQuote(proxyConfigPath),
-			shellQuote("/var/log/caddy")),
-		"fi",
+	}
+	lines = append(lines, renderMaintenanceAwareSiteConfigCommands(opts, siteConfigPath, siteCaddy)...)
+	lines = append(lines, renderProxyReloadCommands(opts, rootCaddyPath, proxySitesDir, proxyDataPath, proxyConfigPath)...)
+	lines = append(lines,
 		fmt.Sprintf("HISTORY_FILE=%s", shellQuote(historyPath)),
 		fmt.Sprintf("printf '%%s\\n' %s > %s", shellQuote(opts.ReleaseID), shellQuote(currentReleaseFile)),
 		fmt.Sprintf("printf '%%s\\t%%s\\t%%s\\t%%s\\t%%s\\t%%s\\n' %s 'static' '0' %s %s \"$(date -u +%%Y-%%m-%%dT%%H:%%M:%%SZ)\" >> \"$HISTORY_FILE\"",
@@ -760,7 +734,7 @@ func renderStaticHetznerDeployScript(opts RemoteOptions) string {
 		fmt.Sprintf("history_limit=%d", releaseKeepCount(opts)),
 		"if [ -f \"$HISTORY_FILE\" ]; then tail -n \"$history_limit\" \"$HISTORY_FILE\" > \"$HISTORY_FILE.tmp\" && mv \"$HISTORY_FILE.tmp\" \"$HISTORY_FILE\"; fi",
 		cleanup,
-	}
+	)
 	return strings.Join(lines, "\n")
 }
 

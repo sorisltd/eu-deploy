@@ -413,6 +413,187 @@ func main() {
 	addNoPromptFlag(analyticsInstallCmd)
 	analyticsCmd.AddCommand(analyticsInstallCmd)
 
+	maintenanceCmd := &cobra.Command{
+		Use:   "maintenance",
+		Short: "Temporarily serve a maintenance page instead of the live app",
+	}
+
+	maintenanceStatusCmd := &cobra.Command{
+		Use:   "status",
+		Short: "Show whether maintenance mode is enabled for the current project",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			jsonMode := commandJSONEnabled(cmd)
+			cfg, cfgPath, wd, err := loadConfigFromWorkingDir()
+			if err != nil {
+				return err
+			}
+			requestedTarget, err := cmd.Flags().GetString("target")
+			if err != nil {
+				return err
+			}
+			target := resolveTarget(cfg, requestedTarget, "hetzner")
+			if !deploy.IsRemoteTarget(target) {
+				return fmt.Errorf("unsupported target: %s", target)
+			}
+			remoteTarget, err := deploy.ParseRemoteTarget(target)
+			if err != nil {
+				return err
+			}
+			if commandShouldPrompt(cmd) {
+				prepared, err := deploy.PrepareRemoteConfig(&cfg, wd, remoteTarget, deploy.PrepareRemoteConfigOptions{})
+				if err != nil {
+					return err
+				}
+				if prepared.Changed {
+					if err := config.WriteYAML(cfgPath, cfg); err != nil {
+						return err
+					}
+					fmt.Printf("OK Updated %s\n", filepath.Base(cfgPath))
+				}
+			}
+			opts, err := buildMaintenanceOptions(cfg, wd, remoteTarget)
+			if err != nil {
+				return err
+			}
+			status, err := deploy.ReadRemoteMaintenanceStatus(opts)
+			if err != nil {
+				return err
+			}
+			if jsonMode {
+				return emitJSONSuccess(cmd, string(remoteTarget), status)
+			}
+			if status.Enabled {
+				fmt.Printf("OK Maintenance mode is enabled for %s\n", cfg.Routes[0].Hostname)
+				if status.EnabledAt != "" {
+					fmt.Printf("OK Enabled at: %s\n", status.EnabledAt)
+				}
+				if status.Message != "" {
+					fmt.Printf("OK Message: %s\n", status.Message)
+				}
+				return nil
+			}
+			fmt.Printf("OK Maintenance mode is disabled for %s\n", cfg.Routes[0].Hostname)
+			return nil
+		},
+	}
+	maintenanceStatusCmd.Flags().String("target", "", "Maintenance target (hetzner|scaleway|ovh)")
+	addJSONFlag(maintenanceStatusCmd)
+	addNoPromptFlag(maintenanceStatusCmd)
+
+	maintenanceEnableCmd := &cobra.Command{
+		Use:   "enable",
+		Short: "Enable maintenance mode for the current project",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			jsonMode := commandJSONEnabled(cmd)
+			cfg, cfgPath, wd, err := loadConfigFromWorkingDir()
+			if err != nil {
+				return err
+			}
+			requestedTarget, err := cmd.Flags().GetString("target")
+			if err != nil {
+				return err
+			}
+			target := resolveTarget(cfg, requestedTarget, "hetzner")
+			if !deploy.IsRemoteTarget(target) {
+				return fmt.Errorf("unsupported target: %s", target)
+			}
+			remoteTarget, err := deploy.ParseRemoteTarget(target)
+			if err != nil {
+				return err
+			}
+			if commandShouldPrompt(cmd) {
+				prepared, err := deploy.PrepareRemoteConfig(&cfg, wd, remoteTarget, deploy.PrepareRemoteConfigOptions{})
+				if err != nil {
+					return err
+				}
+				if prepared.Changed {
+					if err := config.WriteYAML(cfgPath, cfg); err != nil {
+						return err
+					}
+					fmt.Printf("OK Updated %s\n", filepath.Base(cfgPath))
+				}
+			}
+			opts, err := buildMaintenanceOptions(cfg, wd, remoteTarget)
+			if err != nil {
+				return err
+			}
+			message, err := cmd.Flags().GetString("message")
+			if err != nil {
+				return err
+			}
+			status, err := deploy.EnableRemoteMaintenance(opts, strings.TrimSpace(message))
+			if err != nil {
+				return err
+			}
+			if jsonMode {
+				return emitJSONSuccess(cmd, string(remoteTarget), status)
+			}
+			fmt.Printf("OK Maintenance mode enabled for %s\n", cfg.Routes[0].Hostname)
+			if status.Message != "" {
+				fmt.Printf("OK Message: %s\n", status.Message)
+			}
+			return nil
+		},
+	}
+	maintenanceEnableCmd.Flags().String("target", "", "Maintenance target (hetzner|scaleway|ovh)")
+	maintenanceEnableCmd.Flags().String("message", "", "Optional maintenance message shown on the holding page")
+	addJSONFlag(maintenanceEnableCmd)
+	addNoPromptFlag(maintenanceEnableCmd)
+
+	maintenanceDisableCmd := &cobra.Command{
+		Use:   "disable",
+		Short: "Disable maintenance mode and restore the live app",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			jsonMode := commandJSONEnabled(cmd)
+			cfg, cfgPath, wd, err := loadConfigFromWorkingDir()
+			if err != nil {
+				return err
+			}
+			requestedTarget, err := cmd.Flags().GetString("target")
+			if err != nil {
+				return err
+			}
+			target := resolveTarget(cfg, requestedTarget, "hetzner")
+			if !deploy.IsRemoteTarget(target) {
+				return fmt.Errorf("unsupported target: %s", target)
+			}
+			remoteTarget, err := deploy.ParseRemoteTarget(target)
+			if err != nil {
+				return err
+			}
+			if commandShouldPrompt(cmd) {
+				prepared, err := deploy.PrepareRemoteConfig(&cfg, wd, remoteTarget, deploy.PrepareRemoteConfigOptions{})
+				if err != nil {
+					return err
+				}
+				if prepared.Changed {
+					if err := config.WriteYAML(cfgPath, cfg); err != nil {
+						return err
+					}
+					fmt.Printf("OK Updated %s\n", filepath.Base(cfgPath))
+				}
+			}
+			opts, err := buildMaintenanceOptions(cfg, wd, remoteTarget)
+			if err != nil {
+				return err
+			}
+			status, err := deploy.DisableRemoteMaintenance(opts)
+			if err != nil {
+				return err
+			}
+			if jsonMode {
+				return emitJSONSuccess(cmd, string(remoteTarget), status)
+			}
+			fmt.Printf("OK Maintenance mode disabled for %s\n", cfg.Routes[0].Hostname)
+			return nil
+		},
+	}
+	maintenanceDisableCmd.Flags().String("target", "", "Maintenance target (hetzner|scaleway|ovh)")
+	addJSONFlag(maintenanceDisableCmd)
+	addNoPromptFlag(maintenanceDisableCmd)
+
+	maintenanceCmd.AddCommand(maintenanceStatusCmd, maintenanceEnableCmd, maintenanceDisableCmd)
+
 	logsCmd := &cobra.Command{
 		Use:   "logs",
 		Short: "Stream remote container logs",
@@ -688,7 +869,7 @@ func main() {
 	addJSONFlag(rollbackCmd)
 	addNoPromptFlag(rollbackCmd)
 
-	rootCmd.AddCommand(initCmd, buildCmd, deployCmd, preflightCmd, bootstrapCmd, analyticsCmd, logsCmd, releasesCmd, destroyCmd, rollbackCmd)
+	rootCmd.AddCommand(initCmd, buildCmd, deployCmd, preflightCmd, bootstrapCmd, analyticsCmd, maintenanceCmd, logsCmd, releasesCmd, destroyCmd, rollbackCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		if argsWantJSON(os.Args[1:]) {
@@ -1140,6 +1321,10 @@ func buildAnalyticsInstallOptions(cfg config.Config, target deploy.RemoteTarget)
 		SSHKeyPath:       spec.SSHKeyPath,
 		RemoteServerPath: serverPath,
 	}, nil
+}
+
+func buildMaintenanceOptions(cfg config.Config, wd string, target deploy.RemoteTarget) (deploy.RemoteOptions, error) {
+	return buildRemoteOptions(cfg, wd, target, "", "")
 }
 
 func buildAnalyticsWorkerBinary() (string, func(), error) {

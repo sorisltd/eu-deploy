@@ -70,6 +70,25 @@ func TestRenderStaticSiteCaddyfileWithRoutePath(t *testing.T) {
 	}
 }
 
+func TestRenderMaintenanceSiteCaddyfile(t *testing.T) {
+	got := renderMaintenanceSiteCaddyfile([]string{"example.com"}, "/", "/opt/eu-deploy/apps/example/maintenance")
+
+	for _, expected := range []string{
+		"example.com {",
+		`header Cache-Control "no-store"`,
+		"root * /opt/eu-deploy/apps/example/maintenance",
+		"try_files {path} /index.html",
+		"file_server",
+	} {
+		if !strings.Contains(got, expected) {
+			t.Fatalf("maintenance caddyfile missing %q:\n%s", expected, got)
+		}
+	}
+	if strings.Contains(got, "output file /var/log/caddy") {
+		t.Fatalf("maintenance caddyfile should not write analytics logs:\n%s", got)
+	}
+}
+
 func TestRenderRootCaddyfile(t *testing.T) {
 	got := renderRootCaddyfile()
 
@@ -254,6 +273,38 @@ func TestRenderHetznerDeployScriptMigratesLegacySingleContainer(t *testing.T) {
 	}
 }
 
+func TestRenderHetznerDeployScriptPreservesMaintenanceMode(t *testing.T) {
+	got := renderHetznerDeployScript(HetznerOptions{
+		RemoteServerPath:   "/opt/eu-deploy",
+		RemoteAppPath:      "/opt/eu-deploy/apps/massage",
+		RemoteHost:         "example.com",
+		RemoteUser:         "root",
+		RemotePort:         22,
+		RuntimeStart:       "npm run start",
+		ContainerPort:      3000,
+		ServicePort:        3001,
+		ImageTag:           "eu-deploy-massage:remote",
+		ReleaseID:          "release-123",
+		AppContainerName:   "eu-massage-app",
+		ProxyContainerName: "eu-shared-caddy",
+		Hostname:           "massage.example.com",
+		Hostnames:          []string{"massage.example.com"},
+		RoutePath:          "/",
+		HealthcheckPath:    "/",
+		SiteConfigName:     "massage.example.com.caddy",
+	})
+
+	for _, expected := range []string{
+		`if [ -f '/opt/eu-deploy/apps/massage/maintenance.json' ] && grep -Eq '"enabled"[[:space:]]*:[[:space:]]*true' '/opt/eu-deploy/apps/massage/maintenance.json'; then`,
+		`if [ ! -f '/opt/eu-deploy/apps/massage/maintenance/index.html' ]; then`,
+		`root * /opt/eu-deploy/apps/massage/maintenance`,
+	} {
+		if !strings.Contains(got, expected) {
+			t.Fatalf("deploy script missing maintenance preservation %q:\n%s", expected, got)
+		}
+	}
+}
+
 func TestRenderStaticHetznerDeployScript(t *testing.T) {
 	got := renderHetznerDeployScript(HetznerOptions{
 		RuntimeType:        "static",
@@ -286,6 +337,66 @@ func TestRenderStaticHetznerDeployScript(t *testing.T) {
 	}
 	if strings.Contains(got, "docker build -t") {
 		t.Fatalf("static deploy script should not build a docker image:\n%s", got)
+	}
+}
+
+func TestRenderEnableRemoteMaintenanceScript(t *testing.T) {
+	got := renderEnableRemoteMaintenanceScript(HetznerOptions{
+		RuntimeType:        "web",
+		ProjectName:        "massage",
+		RemoteServerPath:   "/opt/eu-deploy",
+		RemoteAppPath:      "/opt/eu-deploy/apps/massage",
+		RemoteHost:         "example.com",
+		RemoteUser:         "root",
+		RemotePort:         22,
+		ServicePort:        3001,
+		ProxyContainerName: "eu-shared-caddy",
+		Hostname:           "massage.example.com",
+		Hostnames:          []string{"massage.example.com"},
+		RoutePath:          "/",
+		SiteConfigName:     "massage.example.com.caddy",
+	}, "Back in 30 minutes.")
+
+	for _, expected := range []string{
+		`cat > '/opt/eu-deploy/apps/massage/maintenance/index.html' <<'EOF'`,
+		`Back in 30 minutes.`,
+		`cat > '/opt/eu-deploy/apps/massage/maintenance.json' <<EOF`,
+		`"enabled": true`,
+		`"message": "Back in 30 minutes."`,
+		`root * /opt/eu-deploy/apps/massage/maintenance`,
+	} {
+		if !strings.Contains(got, expected) {
+			t.Fatalf("enable maintenance script missing %q:\n%s", expected, got)
+		}
+	}
+}
+
+func TestRenderDisableRemoteMaintenanceScriptRestoresLiveSite(t *testing.T) {
+	got := renderDisableRemoteMaintenanceScript(HetznerOptions{
+		RuntimeType:        "web",
+		RemoteServerPath:   "/opt/eu-deploy",
+		RemoteAppPath:      "/opt/eu-deploy/apps/massage",
+		RemoteHost:         "example.com",
+		RemoteUser:         "root",
+		RemotePort:         22,
+		ServicePort:        3001,
+		ProxyContainerName: "eu-shared-caddy",
+		Hostname:           "massage.example.com",
+		Hostnames:          []string{"massage.example.com"},
+		RoutePath:          "/",
+		SiteConfigName:     "massage.example.com.caddy",
+		AnalyticsLogName:   "massage",
+	})
+
+	for _, expected := range []string{
+		`rm -f '/opt/eu-deploy/apps/massage/maintenance.json'`,
+		`rm -rf '/opt/eu-deploy/apps/massage/maintenance'`,
+		`output file /var/log/caddy/massage.access.log`,
+		`reverse_proxy 127.0.0.1:3001`,
+	} {
+		if !strings.Contains(got, expected) {
+			t.Fatalf("disable maintenance script missing %q:\n%s", expected, got)
+		}
 	}
 }
 
