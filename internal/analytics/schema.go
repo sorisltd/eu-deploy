@@ -27,8 +27,12 @@ CREATE TABLE IF NOT EXISTS analytics_buffer (
   isp_name      TEXT,
   path          TEXT,
   status_code   INTEGER,
+  is_known_bot  BOOLEAN NOT NULL DEFAULT FALSE,
   bytes_sent    BIGINT NOT NULL DEFAULT 0
 );
+
+ALTER TABLE analytics_buffer
+  ADD COLUMN IF NOT EXISTS is_known_bot BOOLEAN NOT NULL DEFAULT FALSE;
 
 CREATE INDEX IF NOT EXISTS analytics_buffer_project_timestamp_idx
   ON analytics_buffer(project_id, timestamp DESC);
@@ -164,6 +168,7 @@ WITH buffer_rows AS (
     b.ip_hash,
     COALESCE(b.path, '/') AS path,
     COALESCE(b.status_code, 0) AS status_code,
+    COALESCE(b.is_known_bot, FALSE) AS is_known_bot,
     b.bytes_sent
   FROM analytics_buffer b
   WHERE %s = DATE '%s'
@@ -173,6 +178,7 @@ ip_day_flags AS (
     project_id,
     date,
     ip_hash,
+    BOOL_OR(is_known_bot) AS has_known_bot_ua,
     BOOL_OR(%s) AS has_probe_path,
     COUNT(*) FILTER (WHERE %s) AS short_404_probes,
     COUNT(*) FILTER (WHERE %s) AS crawler_utility_requests,
@@ -191,6 +197,8 @@ classified_rows AS (
     b.ip_hash,
     b.bytes_sent,
     (
+      flags.has_known_bot_ua
+      OR
       flags.has_probe_path
       OR flags.short_404_probes >= 2
       OR (flags.crawler_utility_requests > 0 AND flags.non_utility_requests = 0)

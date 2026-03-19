@@ -45,9 +45,10 @@ type caddyLogEntry struct {
 	Status  int             `json:"status"`
 	Size    json.RawMessage `json:"size"`
 	Request struct {
-		RemoteIP string `json:"remote_ip"`
-		ClientIP string `json:"client_ip"`
-		URI      string `json:"uri"`
+		RemoteIP string              `json:"remote_ip"`
+		ClientIP string              `json:"client_ip"`
+		URI      string              `json:"uri"`
+		Headers  map[string][]string `json:"headers"`
 	} `json:"request"`
 }
 
@@ -61,6 +62,7 @@ type logRecord struct {
 	ISPName     sql.NullString
 	Path        sql.NullString
 	StatusCode  sql.NullInt64
+	IsKnownBot  bool
 	BytesSent   int64
 }
 
@@ -129,8 +131,9 @@ func Process(ctx context.Context, cfg Config) error {
 		  isp_name,
 		  path,
 		  status_code,
+		  is_known_bot,
 		  bytes_sent
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
 	`)
 	if err != nil {
 		return err
@@ -160,6 +163,7 @@ func Process(ctx context.Context, cfg Config) error {
 				record.ISPName,
 				record.Path,
 				record.StatusCode,
+				record.IsKnownBot,
 				record.BytesSent,
 			); execErr != nil {
 				return execErr
@@ -387,6 +391,7 @@ func recordFromLine(
 	}
 
 	path := cleanPath(entry.Request.URI)
+	userAgent := firstHeaderValue(entry.Request.Headers, "User-Agent")
 	lookup := lookupGeo(ip, cityReader, asnReader)
 	bytesSent := parseInt64(entry.Size)
 
@@ -400,6 +405,7 @@ func recordFromLine(
 		ISPName:     lookup.ispName,
 		Path:        nullIfEmpty(path),
 		StatusCode:  nullableInt64(int64(entry.Status)),
+		IsKnownBot:  isKnownBotUserAgent(userAgent),
 		BytesSent:   bytesSent,
 	}, nil
 }
@@ -494,6 +500,107 @@ func parseInt64(raw json.RawMessage) int64 {
 	}
 
 	return 0
+}
+
+func firstHeaderValue(headers map[string][]string, key string) string {
+	for name, values := range headers {
+		if !strings.EqualFold(name, key) || len(values) == 0 {
+			continue
+		}
+		return strings.TrimSpace(values[0])
+	}
+
+	return ""
+}
+
+func isKnownBotUserAgent(userAgent string) bool {
+	value := strings.ToLower(strings.TrimSpace(userAgent))
+	if value == "" {
+		return false
+	}
+
+	knownBotTokens := []string{
+		"googlebot",
+		"googleother",
+		"adsbot",
+		"apis-google",
+		"mediapartners-google",
+		"feedfetcher-google",
+		"bingbot",
+		"adidxbot",
+		"duckduckbot",
+		"baiduspider",
+		"bytespider",
+		"yandexbot",
+		"yandexmobilebot",
+		"petalbot",
+		"applebot",
+		"amazonbot",
+		"facebookexternalhit",
+		"meta-externalagent",
+		"meta-externalfetcher",
+		"linkedinbot",
+		"slackbot",
+		"discordbot",
+		"twitterbot",
+		"redditbot",
+		"telegrambot",
+		"skypeuripreview",
+		"semrushbot",
+		"ahrefsbot",
+		"mj12bot",
+		"dotbot",
+		"rogerbot",
+		"ccbot",
+		"claudebot",
+		"gptbot",
+		"oai-searchbot",
+		"perplexitybot",
+		"uptimerobot",
+		"pingdom",
+		"statuscake",
+		"better uptime",
+		"datadog/synthetics",
+	}
+
+	for _, token := range knownBotTokens {
+		if strings.Contains(value, token) {
+			return true
+		}
+	}
+
+	automationTokens := []string{
+		"curl/",
+		"wget/",
+		"python-requests",
+		"python-httpx",
+		"aiohttp",
+		"go-http-client",
+		"headlesschrome",
+		"phantomjs",
+		"selenium",
+		"playwright",
+		"puppeteer",
+		"node-fetch",
+		"postmanruntime",
+		"insomnia",
+		"scrapy",
+		"libwww-perl",
+		"apache-httpclient",
+		"java/",
+		"okhttp",
+		"chrome-lighthouse",
+	}
+
+	for _, token := range automationTokens {
+		if strings.Contains(value, token) {
+			return true
+		}
+	}
+
+	return strings.Contains(value, "bot") ||
+		strings.Contains(value, "crawler") ||
+		strings.Contains(value, "spider")
 }
 
 func hashIP(secret string, timestamp time.Time, ip string) string {

@@ -21,6 +21,8 @@ func TestAggregateSQLUsesDateLiteral(t *testing.T) {
 		"human_visitors",
 		"human_requests",
 		"human_bandwidth_mb",
+		"has_known_bot_ua",
+		"flags.has_known_bot_ua",
 		"short_404_probes >= 2",
 		"crawler_utility_requests > 0 AND flags.non_utility_requests = 0",
 	} {
@@ -32,6 +34,8 @@ func TestAggregateSQLUsesDateLiteral(t *testing.T) {
 
 func TestSchemaSQLAddsHumanColumns(t *testing.T) {
 	for _, expected := range []string{
+		"is_known_bot  BOOLEAN NOT NULL DEFAULT FALSE",
+		"ADD COLUMN IF NOT EXISTS is_known_bot BOOLEAN NOT NULL DEFAULT FALSE",
 		"ADD COLUMN IF NOT EXISTS human_visitors",
 		"ADD COLUMN IF NOT EXISTS human_requests",
 		"ADD COLUMN IF NOT EXISTS human_bandwidth_mb",
