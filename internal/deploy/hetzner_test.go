@@ -233,6 +233,9 @@ func TestRenderHetznerDeployScriptRunsPostDeployCommand(t *testing.T) {
 	if !strings.Contains(got, `-v '/var/log/caddy':/var/log/caddy`) {
 		t.Fatalf("deploy script should mount the host caddy log directory:\n%s", got)
 	}
+	if !strings.Contains(got, `-v '/opt/eu-deploy':'/opt/eu-deploy':ro`) {
+		t.Fatalf("deploy script should mount the remote server root for maintenance/static assets:\n%s", got)
+	}
 }
 
 func TestRenderHetznerDeployScriptCopiesPackageMetadataIntoReleaseDir(t *testing.T) {
@@ -260,6 +263,7 @@ func TestRenderHetznerDeployScriptCopiesPackageMetadataIntoReleaseDir(t *testing
 		`if [ -f package.json ]; then cp package.json '/opt/eu-deploy/apps/massage/releases/release-123/package.json'; fi`,
 		`if [ -f package-lock.json ]; then cp package-lock.json '/opt/eu-deploy/apps/massage/releases/release-123/package-lock.json'; fi`,
 		`-v '/var/log/caddy':/var/log/caddy`,
+		`-v '/opt/eu-deploy':'/opt/eu-deploy':ro`,
 	} {
 		if !strings.Contains(got, expected) {
 			t.Fatalf("deploy script missing %q:\n%s", expected, got)
@@ -422,6 +426,7 @@ func TestRenderDisableRemoteMaintenanceScriptRestoresLiveSite(t *testing.T) {
 		`SECONDARY_PORT=3002`,
 		`if [ "$active_slot" = 'b' ]; then`,
 		`TARGET_PORT=$SECONDARY_PORT`,
+		`grep -Fx -- '/opt/eu-deploy -> /opt/eu-deploy'`,
 		`output file /var/log/caddy/massage.access.log`,
 		`reverse_proxy 127.0.0.1:${TARGET_PORT}`,
 	} {
