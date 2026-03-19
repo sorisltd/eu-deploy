@@ -1150,6 +1150,9 @@ func buildAnalyticsWorkerBinary() (string, func(), error) {
 
 	outputPath := filepath.Join(dir, "eu-analytics-worker")
 	cmd := exec.Command("go", "build", "-o", outputPath, "./cmd/eu-analytics-worker")
+	if sourceDir := strings.TrimSpace(os.Getenv("EU_DEPLOY_SOURCE_DIR")); sourceDir != "" {
+		cmd.Dir = sourceDir
+	}
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {

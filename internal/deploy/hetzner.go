@@ -658,12 +658,14 @@ func renderHetznerDeployScript(opts RemoteOptions) string {
 		"else",
 		"  docker pull caddy:2 >/dev/null",
 		fmt.Sprintf("  docker rm -f %s >/dev/null 2>&1 || true", shellQuote(opts.ProxyContainerName)),
-		fmt.Sprintf("  docker run -d --restart unless-stopped --network host --name %s -v %s:/etc/caddy/Caddyfile:ro -v %s:/etc/caddy/sites:ro -v %s:/data -v %s:/config caddy:2 >/dev/null",
+		fmt.Sprintf("  mkdir -p %s", shellQuote("/var/log/caddy")),
+		fmt.Sprintf("  docker run -d --restart unless-stopped --network host --name %s -v %s:/etc/caddy/Caddyfile:ro -v %s:/etc/caddy/sites:ro -v %s:/data -v %s:/config -v %s:/var/log/caddy caddy:2 >/dev/null",
 			shellQuote(opts.ProxyContainerName),
 			shellQuote(rootCaddyPath),
 			shellQuote(proxySitesDir),
 			shellQuote(proxyDataPath),
-			shellQuote(proxyConfigPath)),
+			shellQuote(proxyConfigPath),
+			shellQuote("/var/log/caddy")),
 		"fi",
 		"if docker ps --format '{{.Names}}' | grep -Fx -- \"$old_container\" >/dev/null 2>&1; then",
 		"  docker rm -f \"$old_container\" >/dev/null 2>&1 || true",
@@ -740,12 +742,14 @@ func renderStaticHetznerDeployScript(opts RemoteOptions) string {
 		"else",
 		"  docker pull caddy:2 >/dev/null",
 		fmt.Sprintf("  docker rm -f %s >/dev/null 2>&1 || true", shellQuote(opts.ProxyContainerName)),
-		fmt.Sprintf("  docker run -d --restart unless-stopped --network host --name %s -v %s:/etc/caddy/Caddyfile:ro -v %s:/etc/caddy/sites:ro -v %s:/data -v %s:/config caddy:2 >/dev/null",
+		fmt.Sprintf("  mkdir -p %s", shellQuote("/var/log/caddy")),
+		fmt.Sprintf("  docker run -d --restart unless-stopped --network host --name %s -v %s:/etc/caddy/Caddyfile:ro -v %s:/etc/caddy/sites:ro -v %s:/data -v %s:/config -v %s:/var/log/caddy caddy:2 >/dev/null",
 			shellQuote(opts.ProxyContainerName),
 			shellQuote(rootCaddyPath),
 			shellQuote(proxySitesDir),
 			shellQuote(proxyDataPath),
-			shellQuote(proxyConfigPath)),
+			shellQuote(proxyConfigPath),
+			shellQuote("/var/log/caddy")),
 		"fi",
 		fmt.Sprintf("HISTORY_FILE=%s", shellQuote(historyPath)),
 		fmt.Sprintf("printf '%%s\\n' %s > %s", shellQuote(opts.ReleaseID), shellQuote(currentReleaseFile)),
@@ -980,8 +984,46 @@ func formatCaddySiteHosts(hostnames []string) string {
 	return strings.Join(ordered, ", ")
 }
 
+var cloudflareTrustedProxyRanges = []string{
+	"173.245.48.0/20",
+	"103.21.244.0/22",
+	"103.22.200.0/22",
+	"103.31.4.0/22",
+	"141.101.64.0/18",
+	"108.162.192.0/18",
+	"190.93.240.0/20",
+	"188.114.96.0/20",
+	"197.234.240.0/22",
+	"198.41.128.0/17",
+	"162.158.0.0/15",
+	"104.16.0.0/13",
+	"104.24.0.0/14",
+	"172.64.0.0/13",
+	"131.0.72.0/22",
+	"2400:cb00::/32",
+	"2606:4700::/32",
+	"2803:f800::/32",
+	"2405:b500::/32",
+	"2405:8100::/32",
+	"2a06:98c0::/29",
+	"2c0f:f248::/32",
+}
+
 func renderRootCaddyfile() string {
-	return "import /etc/caddy/sites/*.caddy\n"
+	lines := []string{
+		"{",
+		"  servers {",
+		"    trusted_proxies static " + strings.Join(cloudflareTrustedProxyRanges, " "),
+		"    client_ip_headers CF-Connecting-IP",
+		"    trusted_proxies_strict",
+		"  }",
+		"}",
+		"",
+		"import /etc/caddy/sites/*.caddy",
+		"",
+	}
+
+	return strings.Join(lines, "\n")
 }
 
 func renderReleaseCleanupCommands(opts RemoteOptions, historyLimitVar string) string {

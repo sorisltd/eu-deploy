@@ -137,6 +137,7 @@ func renderHetznerBootstrapScript(opts HetznerBootstrapOptions) string {
 		fmt.Sprintf("$SUDO mkdir -p %s", shellQuote(filepathJoinSlash(proxyRoot, "sites"))),
 		fmt.Sprintf("$SUDO mkdir -p %s", shellQuote(filepathJoinSlash(proxyRoot, "data"))),
 		fmt.Sprintf("$SUDO mkdir -p %s", shellQuote(filepathJoinSlash(proxyRoot, "config"))),
+		fmt.Sprintf("$SUDO mkdir -p %s", shellQuote("/var/log/caddy")),
 		fmt.Sprintf("$SUDO docker network inspect %s >/dev/null 2>&1 || $SUDO docker network create %s >/dev/null",
 			shellQuote(sharedDockerNetwork),
 			shellQuote(sharedDockerNetwork)),

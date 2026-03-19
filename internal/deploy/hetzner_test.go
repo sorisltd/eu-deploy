@@ -71,8 +71,18 @@ func TestRenderStaticSiteCaddyfileWithRoutePath(t *testing.T) {
 }
 
 func TestRenderRootCaddyfile(t *testing.T) {
-	if got := renderRootCaddyfile(); got != "import /etc/caddy/sites/*.caddy\n" {
-		t.Fatalf("unexpected root caddyfile: %q", got)
+	got := renderRootCaddyfile()
+
+	for _, expected := range []string{
+		"trusted_proxies static 173.245.48.0/20",
+		"2c0f:f248::/32",
+		"client_ip_headers CF-Connecting-IP",
+		"trusted_proxies_strict",
+		"import /etc/caddy/sites/*.caddy",
+	} {
+		if !strings.Contains(got, expected) {
+			t.Fatalf("root caddyfile missing %q:\n%s", expected, got)
+		}
 	}
 }
 
@@ -133,6 +143,7 @@ func TestRenderHetznerBootstrapScript(t *testing.T) {
 		"$SUDO mkdir -p '/opt/eu-deploy'",
 		"$SUDO mkdir -p '/opt/eu-deploy/apps/massage'",
 		"$SUDO mkdir -p '/opt/eu-deploy/_proxy/sites'",
+		"$SUDO mkdir -p '/var/log/caddy'",
 		"$SUDO docker network inspect 'eu-deploy' >/dev/null 2>&1 || $SUDO docker network create 'eu-deploy' >/dev/null",
 		"$SUDO docker run -d --restart unless-stopped --network 'eu-deploy' -p 127.0.0.1:5432:5432 --name 'eu-shared-postgres'",
 		"$SUDO apt-get install -y ufw",
@@ -173,6 +184,9 @@ func TestRenderHetznerDeployScriptRunsPostDeployCommand(t *testing.T) {
 	if !strings.Contains(got, `docker exec 'eu-shared-caddy' caddy reload --config /etc/caddy/Caddyfile`) {
 		t.Fatalf("deploy script should reload the shared proxy instead of only recreating it:\n%s", got)
 	}
+	if !strings.Contains(got, `-v '/var/log/caddy':/var/log/caddy`) {
+		t.Fatalf("deploy script should mount the host caddy log directory:\n%s", got)
+	}
 }
 
 func TestRenderHetznerDeployScriptCopiesPackageMetadataIntoReleaseDir(t *testing.T) {
@@ -199,6 +213,7 @@ func TestRenderHetznerDeployScriptCopiesPackageMetadataIntoReleaseDir(t *testing
 	for _, expected := range []string{
 		`if [ -f package.json ]; then cp package.json '/opt/eu-deploy/apps/massage/releases/release-123/package.json'; fi`,
 		`if [ -f package-lock.json ]; then cp package-lock.json '/opt/eu-deploy/apps/massage/releases/release-123/package-lock.json'; fi`,
+		`-v '/var/log/caddy':/var/log/caddy`,
 	} {
 		if !strings.Contains(got, expected) {
 			t.Fatalf("deploy script missing %q:\n%s", expected, got)
