@@ -238,6 +238,39 @@ func TestRenderHetznerDeployScriptRunsPostDeployCommand(t *testing.T) {
 	}
 }
 
+func TestRenderHetznerDeployScriptPreservesExistingRuntimeEnv(t *testing.T) {
+	got := renderHetznerDeployScript(HetznerOptions{
+		RemoteServerPath:   "/opt/eu-deploy",
+		RemoteAppPath:      "/opt/eu-deploy/apps/massage",
+		RemoteHost:         "example.com",
+		RemoteUser:         "root",
+		RemotePort:         22,
+		RuntimeStart:       "npm run start",
+		ContainerPort:      3000,
+		ServicePort:        3001,
+		ImageTag:           "eu-deploy-massage:remote",
+		ReleaseID:          "release-123",
+		AppContainerName:   "eu-massage-app",
+		ProxyContainerName: "eu-shared-caddy",
+		Hostname:           "massage.example.com",
+		RoutePath:          "/",
+		Hostnames:          []string{"massage.example.com"},
+		HealthcheckPath:    "/",
+		SiteConfigName:     "massage.example.com.caddy",
+	})
+
+	for _, expected := range []string{
+		"grep -v '^[^=]*=$' app.env > app.env.nonempty || true",
+		"done < '/opt/eu-deploy/apps/massage/app.runtime.env'",
+		"cat app.env.nonempty >> app.env.merged 2>/dev/null || true",
+		"mv app.env.merged '/opt/eu-deploy/apps/massage/app.runtime.env'",
+	} {
+		if !strings.Contains(got, expected) {
+			t.Fatalf("deploy script missing %q:\n%s", expected, got)
+		}
+	}
+}
+
 func TestRenderHetznerDeployScriptCopiesPackageMetadataIntoReleaseDir(t *testing.T) {
 	got := renderHetznerDeployScript(HetznerOptions{
 		RemoteServerPath:    "/opt/eu-deploy",

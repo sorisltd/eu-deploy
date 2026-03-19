@@ -180,8 +180,12 @@ func main() {
 				if err != nil {
 					return err
 				}
+				envValues, err := existingDeployEnvValues(cfg, wd)
+				if err != nil {
+					return err
+				}
 				prepared := deploy.PrepareRemoteResult{
-					EnvValues:              existingDeployEnvValues(cfg),
+					EnvValues:              envValues,
 					SharedDatabasePassword: resolveSharedDatabasePassword(remoteTarget),
 				}
 				if commandShouldPrompt(cmd) {
@@ -1241,12 +1245,19 @@ func resolveTarget(cfg config.Config, requested, fallback string) string {
 	return deploy.PreferredDeployTarget(cfg, fallback)
 }
 
-func existingDeployEnvValues(cfg config.Config) map[string]string {
+func existingDeployEnvValues(cfg config.Config, wd string) (map[string]string, error) {
 	values := map[string]string{}
 	generatedDatabaseURL := cfg.Database != nil && strings.TrimSpace(cfg.Database.Mode) == "shared"
+	localFallbacks, err := deploy.LoadLocalDeployEnvFiles(wd)
+	if err != nil {
+		return nil, err
+	}
 
 	for key, value := range cfg.Env.Public {
 		value = resolveConfigEnvValue(key, value)
+		if value == "" {
+			value = strings.TrimSpace(localFallbacks[key])
+		}
 		if value != "" {
 			values[key] = value
 		}
@@ -1256,11 +1267,14 @@ func existingDeployEnvValues(cfg config.Config) map[string]string {
 			continue
 		}
 		value = resolveConfigEnvValue(key, value)
+		if value == "" {
+			value = strings.TrimSpace(localFallbacks[key])
+		}
 		if value != "" {
 			values[key] = value
 		}
 	}
-	return values
+	return values, nil
 }
 
 func buildBootstrapOptions(cfg config.Config, target deploy.RemoteTarget) (deploy.HetznerBootstrapOptions, error) {

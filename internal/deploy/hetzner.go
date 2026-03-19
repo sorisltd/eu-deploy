@@ -1110,6 +1110,10 @@ func renderEnvFile(values map[string]string) (string, error) {
 
 func collectDeployEnvValues(cfg *config.Config, workDir string, p *linePrompter) (map[string]string, bool, error) {
 	changed := false
+	localFallbacks, err := LoadLocalDeployEnvFiles(workDir)
+	if err != nil {
+		return nil, false, err
+	}
 
 	if len(cfg.Env.Public) == 0 && len(cfg.Env.Secret) == 0 {
 		if keys, err := parseEnvTemplateKeys(filepath.Join(workDir, ".env.example")); err == nil && len(keys) > 0 {
@@ -1136,6 +1140,9 @@ func collectDeployEnvValues(cfg *config.Config, workDir string, p *linePrompter)
 	for _, key := range sortedKeys(cfg.Env.Public) {
 		value := strings.TrimSpace(cfg.Env.Public[key])
 		if value == "" {
+			value = strings.TrimSpace(localFallbacks[key])
+		}
+		if value == "" {
 			var err error
 			value, err = p.String(fmt.Sprintf("Value for public env %s (leave blank to skip)", key), "", false)
 			if err != nil {
@@ -1152,6 +1159,9 @@ func collectDeployEnvValues(cfg *config.Config, workDir string, p *linePrompter)
 			continue
 		}
 		value := strings.TrimSpace(cfg.Env.Secret[key])
+		if value == "" {
+			value = strings.TrimSpace(localFallbacks[key])
+		}
 		if value == "" {
 			var err error
 			value, err = p.String(fmt.Sprintf("Value for secret env %s (leave blank to skip)", key), "", false)
