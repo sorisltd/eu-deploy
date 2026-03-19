@@ -125,7 +125,7 @@ func renderMaintenanceAwareSiteConfigCommands(opts RemoteOptions, siteConfigPath
 		"  fi",
 		fmt.Sprintf("  cat > %s <<'EOF'\n%sEOF", shellQuote(siteConfigPath), maintenanceCaddy),
 		"else",
-		fmt.Sprintf("  cat > %s <<'EOF'\n%sEOF", shellQuote(siteConfigPath), liveSiteCaddy),
+		fmt.Sprintf("  cat > %s <<EOF\n%sEOF", shellQuote(siteConfigPath), liveSiteCaddy),
 		"fi",
 	}
 }
