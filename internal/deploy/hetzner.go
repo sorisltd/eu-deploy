@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -845,61 +846,61 @@ func renderSiteCaddyfile(hostnames []string, routePath string, servicePort int, 
 }
 
 func renderStaticSiteCaddyfile(hostnames []string, routePath, rootPath, analyticsLogName string) string {
-	hostLabel := formatCaddySiteHosts(hostnames)
 	routePath = normalizeRoutePath(routePath)
 	rootPath = strings.TrimSpace(rootPath)
 
-	lines := []string{
-		fmt.Sprintf("%s {", hostLabel),
-		"  encode zstd gzip",
-	}
-	lines = append(lines, renderAnalyticsLogBlock(analyticsLogName)...)
+	return renderCaddySiteBlocks(hostnames, func(hostLabel string) []string {
+		lines := []string{
+			fmt.Sprintf("%s {", hostLabel),
+			"  encode zstd gzip",
+		}
+		lines = append(lines, renderAnalyticsLogBlock(analyticsLogName)...)
 
-	if routePath == "/" {
-		lines = append(lines,
-			fmt.Sprintf("  root * %s", rootPath),
-			"  try_files {path} /index.html",
-			"  file_server",
-		)
-	} else {
-		lines = append(lines,
-			fmt.Sprintf("  handle_path %s* {", routePath),
-			fmt.Sprintf("    root * %s", rootPath),
-			"    try_files {path} /index.html",
-			"    file_server",
-			"  }",
-			"  respond 404",
-		)
-	}
-	lines = append(lines, "}")
-
-	return strings.Join(lines, "\n") + "\n"
+		if routePath == "/" {
+			lines = append(lines,
+				fmt.Sprintf("  root * %s", rootPath),
+				"  try_files {path} /index.html",
+				"  file_server",
+			)
+		} else {
+			lines = append(lines,
+				fmt.Sprintf("  handle_path %s* {", routePath),
+				fmt.Sprintf("    root * %s", rootPath),
+				"    try_files {path} /index.html",
+				"    file_server",
+				"  }",
+				"  respond 404",
+			)
+		}
+		lines = append(lines, "}")
+		return lines
+	})
 }
 
 func renderSiteCaddyfileWithUpstream(hostnames []string, routePath, upstream, analyticsLogName string) string {
-	hostLabel := formatCaddySiteHosts(hostnames)
 	routePath = normalizeRoutePath(routePath)
 	upstream = strings.TrimSpace(upstream)
 
-	lines := []string{
-		fmt.Sprintf("%s {", hostLabel),
-		"  encode zstd gzip",
-	}
-	lines = append(lines, renderAnalyticsLogBlock(analyticsLogName)...)
+	return renderCaddySiteBlocks(hostnames, func(hostLabel string) []string {
+		lines := []string{
+			fmt.Sprintf("%s {", hostLabel),
+			"  encode zstd gzip",
+		}
+		lines = append(lines, renderAnalyticsLogBlock(analyticsLogName)...)
 
-	if routePath == "/" {
-		lines = append(lines, fmt.Sprintf("  reverse_proxy %s", upstream))
-	} else {
-		lines = append(lines,
-			fmt.Sprintf("  handle_path %s* {", routePath),
-			fmt.Sprintf("    reverse_proxy %s", upstream),
-			"  }",
-			"  respond 404",
-		)
-	}
-	lines = append(lines, "}")
-
-	return strings.Join(lines, "\n") + "\n"
+		if routePath == "/" {
+			lines = append(lines, fmt.Sprintf("  reverse_proxy %s", upstream))
+		} else {
+			lines = append(lines,
+				fmt.Sprintf("  handle_path %s* {", routePath),
+				fmt.Sprintf("    reverse_proxy %s", upstream),
+				"  }",
+				"  respond 404",
+			)
+		}
+		lines = append(lines, "}")
+		return lines
+	})
 }
 
 func renderAnalyticsLogBlock(logName string) []string {
@@ -956,6 +957,57 @@ func formatCaddySiteHosts(hostnames []string) string {
 		return ""
 	}
 	return strings.Join(ordered, ", ")
+}
+
+func renderCaddySiteBlocks(hostnames []string, render func(hostLabel string) []string) string {
+	blocks := make([]string, 0, 2)
+
+	for _, hostGroup := range splitCaddySiteHosts(hostnames) {
+		hostLabel := formatCaddySiteHosts(hostGroup)
+		if hostLabel == "" {
+			continue
+		}
+		blocks = append(blocks, strings.Join(render(hostLabel), "\n"))
+	}
+
+	if len(blocks) == 0 {
+		return ""
+	}
+
+	return strings.Join(blocks, "\n\n") + "\n"
+}
+
+func splitCaddySiteHosts(hostnames []string) [][]string {
+	httpsHosts := make([]string, 0, len(hostnames))
+	httpHosts := make([]string, 0, len(hostnames))
+
+	for _, hostname := range hostnames {
+		trimmed := strings.TrimSpace(hostname)
+		if trimmed == "" {
+			continue
+		}
+
+		if isIPAddressHost(trimmed) {
+			httpHosts = append(httpHosts, "http://"+trimmed)
+			continue
+		}
+
+		httpsHosts = append(httpsHosts, trimmed)
+	}
+
+	groups := make([][]string, 0, 2)
+	if len(httpsHosts) > 0 {
+		groups = append(groups, httpsHosts)
+	}
+	if len(httpHosts) > 0 {
+		groups = append(groups, httpHosts)
+	}
+
+	return groups
+}
+
+func isIPAddressHost(hostname string) bool {
+	return net.ParseIP(strings.TrimSpace(hostname)) != nil
 }
 
 var cloudflareTrustedProxyRanges = []string{

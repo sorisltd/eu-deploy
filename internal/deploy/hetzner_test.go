@@ -43,6 +43,17 @@ func TestRenderSiteCaddyfileWithMultipleHostnames(t *testing.T) {
 	}
 }
 
+func TestRenderSiteCaddyfileWithIPAddressUsesHTTP(t *testing.T) {
+	got := renderSiteCaddyfile([]string{"89.167.126.100"}, "/", 3000, "example-app")
+
+	if !strings.Contains(got, "http://89.167.126.100 {") {
+		t.Fatalf("ip host should be rendered as an http site block:\n%s", got)
+	}
+	if strings.Contains(got, "\n89.167.126.100 {") {
+		t.Fatalf("ip host should not use a bare host label that triggers auto-https:\n%s", got)
+	}
+}
+
 func TestRenderStaticSiteCaddyfile(t *testing.T) {
 	got := renderStaticSiteCaddyfile([]string{"example.com"}, "/", "/opt/eu-deploy/apps/example/static", "example-app")
 
@@ -56,6 +67,14 @@ func TestRenderStaticSiteCaddyfile(t *testing.T) {
 		if !strings.Contains(got, expected) {
 			t.Fatalf("static site caddyfile missing %q:\n%s", expected, got)
 		}
+	}
+}
+
+func TestRenderStaticSiteCaddyfileWithIPAddressUsesHTTP(t *testing.T) {
+	got := renderStaticSiteCaddyfile([]string{"89.167.126.100"}, "/", "/opt/eu-deploy/apps/example/static", "example-app")
+
+	if !strings.Contains(got, "http://89.167.126.100 {") {
+		t.Fatalf("ip host should be rendered as an http site block:\n%s", got)
 	}
 }
 
@@ -86,6 +105,14 @@ func TestRenderMaintenanceSiteCaddyfile(t *testing.T) {
 	}
 	if strings.Contains(got, "output file /var/log/caddy") {
 		t.Fatalf("maintenance caddyfile should not write analytics logs:\n%s", got)
+	}
+}
+
+func TestRenderMaintenanceSiteCaddyfileWithIPAddressUsesHTTP(t *testing.T) {
+	got := renderMaintenanceSiteCaddyfile([]string{"89.167.126.100"}, "/", "/opt/eu-deploy/apps/example/maintenance")
+
+	if !strings.Contains(got, "http://89.167.126.100 {") {
+		t.Fatalf("ip host should be rendered as an http site block:\n%s", got)
 	}
 }
 

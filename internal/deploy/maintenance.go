@@ -131,36 +131,36 @@ func renderMaintenanceAwareSiteConfigCommands(opts RemoteOptions, siteConfigPath
 }
 
 func renderMaintenanceSiteCaddyfile(hostnames []string, routePath, rootPath string) string {
-	hostLabel := formatCaddySiteHosts(hostnames)
 	routePath = normalizeRoutePath(routePath)
 	rootPath = strings.TrimSpace(rootPath)
 
-	lines := []string{
-		fmt.Sprintf("%s {", hostLabel),
-		"  encode zstd gzip",
-		`  header Cache-Control "no-store"`,
-	}
+	return renderCaddySiteBlocks(hostnames, func(hostLabel string) []string {
+		lines := []string{
+			fmt.Sprintf("%s {", hostLabel),
+			"  encode zstd gzip",
+			`  header Cache-Control "no-store"`,
+		}
 
-	if routePath == "/" {
-		lines = append(lines,
-			fmt.Sprintf("  root * %s", rootPath),
-			"  try_files {path} /index.html",
-			"  file_server",
-		)
-	} else {
-		lines = append(lines,
-			fmt.Sprintf("  handle_path %s* {", routePath),
-			`    header Cache-Control "no-store"`,
-			fmt.Sprintf("    root * %s", rootPath),
-			"    try_files {path} /index.html",
-			"    file_server",
-			"  }",
-			"  respond 404",
-		)
-	}
-	lines = append(lines, "}")
-
-	return strings.Join(lines, "\n") + "\n"
+		if routePath == "/" {
+			lines = append(lines,
+				fmt.Sprintf("  root * %s", rootPath),
+				"  try_files {path} /index.html",
+				"  file_server",
+			)
+		} else {
+			lines = append(lines,
+				fmt.Sprintf("  handle_path %s* {", routePath),
+				`    header Cache-Control "no-store"`,
+				fmt.Sprintf("    root * %s", rootPath),
+				"    try_files {path} /index.html",
+				"    file_server",
+				"  }",
+				"  respond 404",
+			)
+		}
+		lines = append(lines, "}")
+		return lines
+	})
 }
 
 func renderMaintenanceHTML(projectName, message string) string {

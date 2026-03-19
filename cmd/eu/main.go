@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1081,8 +1082,15 @@ func runRemoteDeploy(cmd *cobra.Command, cfg config.Config, wd string, target de
 	fmt.Printf("OK Release: %s\n", opts.ReleaseID)
 	fmt.Printf("OK Server root: %s\n", opts.RemoteServerPath)
 	fmt.Printf("OK Remote app path: %s\n", opts.RemoteAppPath)
-	fmt.Printf("✓ Running at https://%s\n", cfg.Routes[0].Hostname)
+	fmt.Printf("✓ Running at %s://%s\n", externalRouteScheme(cfg.Routes[0].Hostname), cfg.Routes[0].Hostname)
 	return nil
+}
+
+func externalRouteScheme(hostname string) string {
+	if net.ParseIP(strings.TrimSpace(hostname)) != nil {
+		return "http"
+	}
+	return "https"
 }
 
 func runRemotePreflight(cmd *cobra.Command, cfg config.Config, wd string, target deploy.RemoteTarget) error {
