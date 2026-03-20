@@ -81,6 +81,22 @@ func BuildProject(cfg config.Config, workDir string) (Result, error) {
 		return Result{}, err
 	}
 
+	// Auto-install Node dependencies when node_modules is missing.
+	pkgJSON := filepath.Join(workDir, "package.json")
+	nodeModules := filepath.Join(workDir, "node_modules")
+	if _, err := os.Stat(pkgJSON); err == nil {
+		if _, err := os.Stat(nodeModules); os.IsNotExist(err) {
+			installCmd := "npm install"
+			if _, lockErr := os.Stat(filepath.Join(workDir, "package-lock.json")); lockErr == nil {
+				installCmd = "npm ci"
+			}
+			fmt.Printf("OK node_modules missing — running %s\n", installCmd)
+			if err := utils.RunShellCommand(installCmd, workDir); err != nil {
+				return Result{}, fmt.Errorf("dependency install failed: %w", err)
+			}
+		}
+	}
+
 	if err := utils.RunShellCommand(cfg.Build.Command, workDir); err != nil {
 		return Result{}, err
 	}
