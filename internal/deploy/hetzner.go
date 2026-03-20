@@ -543,6 +543,7 @@ func renderHetznerDeployScript(opts RemoteOptions) string {
 	cleanup := renderReleaseCleanupCommands(opts, "history_limit")
 	metadataPath := filepath.ToSlash(filepath.Join(opts.RemoteAppPath, "analytics-project.json"))
 	metadataContents := renderAnalyticsProjectMetadata(opts)
+	siteConfigMarker := filepath.ToSlash(filepath.Join(opts.RemoteAppPath, ".site-config"))
 
 	lines := []string{
 		"set -euo pipefail",
@@ -555,6 +556,13 @@ func renderHetznerDeployScript(opts RemoteOptions) string {
 			shellQuote(sharedDockerNetwork),
 			shellQuote(sharedDockerNetwork)),
 		fmt.Sprintf("cat > %s <<'EOF'\n%sEOF", shellQuote(rootCaddyPath), renderRootCaddyfile()),
+		fmt.Sprintf("if [ -f %s ]; then", shellQuote(siteConfigMarker)),
+		fmt.Sprintf("  prev_site_config=\"$(tr -d '\\r\\n' < %s)\"", shellQuote(siteConfigMarker)),
+		fmt.Sprintf("  if [ -n \"$prev_site_config\" ] && [ \"$prev_site_config\" != %s ]; then", shellQuote(opts.SiteConfigName)),
+		fmt.Sprintf("    rm -f %s/\"$prev_site_config\"", shellQuote(proxySitesDir)),
+		"  fi",
+		"fi",
+		fmt.Sprintf("printf '%%s\\n' %s > %s", shellQuote(opts.SiteConfigName), shellQuote(siteConfigMarker)),
 		"grep -v '^[^=]*=$' app.env > app.env.nonempty || true",
 		fmt.Sprintf("if [ -f %s ]; then", shellQuote(runtimeEnvPath)),
 		"  while IFS= read -r line || [ -n \"$line\" ]; do",
@@ -696,6 +704,7 @@ func renderStaticHetznerDeployScript(opts RemoteOptions) string {
 	cleanup := renderReleaseCleanupCommands(opts, "history_limit")
 	metadataPath := filepath.ToSlash(filepath.Join(opts.RemoteAppPath, "analytics-project.json"))
 	metadataContents := renderAnalyticsProjectMetadata(opts)
+	siteConfigMarker := filepath.ToSlash(filepath.Join(opts.RemoteAppPath, ".site-config"))
 
 	lines := []string{
 		"set -euo pipefail",
@@ -709,6 +718,13 @@ func renderStaticHetznerDeployScript(opts RemoteOptions) string {
 		"  exit 1",
 		"fi",
 		fmt.Sprintf("cat > %s <<'EOF'\n%sEOF", shellQuote(rootCaddyPath), renderRootCaddyfile()),
+		fmt.Sprintf("if [ -f %s ]; then", shellQuote(siteConfigMarker)),
+		fmt.Sprintf("  prev_site_config=\"$(tr -d '\\r\\n' < %s)\"", shellQuote(siteConfigMarker)),
+		fmt.Sprintf("  if [ -n \"$prev_site_config\" ] && [ \"$prev_site_config\" != %s ]; then", shellQuote(opts.SiteConfigName)),
+		fmt.Sprintf("    rm -f %s/\"$prev_site_config\"", shellQuote(proxySitesDir)),
+		"  fi",
+		"fi",
+		fmt.Sprintf("printf '%%s\\n' %s > %s", shellQuote(opts.SiteConfigName), shellQuote(siteConfigMarker)),
 		fmt.Sprintf("mkdir -p %s", shellQuote(releasesPath)),
 		fmt.Sprintf("mkdir -p %s", shellQuote(filepath.Dir(metadataPath))),
 		fmt.Sprintf("cat > %s <<'EOF'\n%sEOF", shellQuote(metadataPath), metadataContents),
