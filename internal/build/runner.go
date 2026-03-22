@@ -86,9 +86,9 @@ func BuildProject(cfg config.Config, workDir string) (Result, error) {
 	nodeModules := filepath.Join(workDir, "node_modules")
 	if _, err := os.Stat(pkgJSON); err == nil {
 		if _, err := os.Stat(nodeModules); os.IsNotExist(err) {
-			installCmd := "npm install"
+			installCmd := "npm install --include=dev"
 			if _, lockErr := os.Stat(filepath.Join(workDir, "package-lock.json")); lockErr == nil {
-				installCmd = "npm ci"
+				installCmd = "npm ci --include=dev"
 			}
 			fmt.Printf("OK node_modules missing — running %s\n", installCmd)
 			if err := utils.RunShellCommand(installCmd, workDir); err != nil {
