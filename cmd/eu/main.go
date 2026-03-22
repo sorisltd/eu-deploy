@@ -1167,11 +1167,16 @@ func buildRemoteOptions(cfg config.Config, wd string, target deploy.RemoteTarget
 	}
 
 	projectName := build.ArtifactName(cfg, wd)
-	safeProject := deploy.SanitizeDockerName(projectName)
+	appIdentity := remoteAppIdentity(spec.AppPath, projectName)
+	safeProject := deploy.SanitizeDockerName(appIdentity)
 	hostnames := resolveRouteHostnames(cfg)
+	primaryHostname := resolveRouteHostname(cfg)
+	if primaryHostname == "" && len(hostnames) > 0 {
+		primaryHostname = hostnames[0]
+	}
 	opts := deploy.RemoteOptions{
 		Provider:           target,
-		ProjectName:        cfg.Project.Name,
+		ProjectName:        appIdentity,
 		RuntimeType:        config.NormalizeRuntimeType(cfg.Runtime),
 		WorkDir:            wd,
 		ArtifactSHA:        artifactSHA,
@@ -1188,12 +1193,12 @@ func buildRemoteOptions(cfg config.Config, wd string, target deploy.RemoteTarget
 		SSHKeyPath:         spec.SSHKeyPath,
 		RemoteServerPath:   spec.ServerPath,
 		RemoteAppPath:      spec.AppPath,
-		Hostname:           resolveRouteHostname(cfg),
+		Hostname:           primaryHostname,
 		Hostnames:          hostnames,
 		RoutePath:          cfg.Routes[0].Path,
-		AnalyticsLogName:   deploy.BuildAnalyticsLogName(cfg.Project.Name),
+		AnalyticsLogName:   deploy.BuildAnalyticsLogName(appIdentity),
 		HealthcheckPath:    cfg.Runtime.Healthcheck.Path,
-		SiteConfigName:     deploy.BuildHetznerSiteConfigName(cfg.Routes[0].Hostname),
+		SiteConfigName:     deploy.BuildHetznerSiteConfigName(primaryHostname),
 		KeepReleases:       3,
 		Packages:           cfg.Runtime.Packages,
 		Volumes:            cfg.Runtime.Volumes,
@@ -1201,11 +1206,11 @@ func buildRemoteOptions(cfg config.Config, wd string, target deploy.RemoteTarget
 	if len(opts.Hostnames) == 0 && strings.TrimSpace(opts.Hostname) != "" {
 		opts.Hostnames = []string{opts.Hostname}
 	}
-	if cfg.Database != nil && strings.TrimSpace(cfg.Database.Mode) == "shared" && cfg.Database.Shared != nil {
+	if sharedDatabase := resolveSharedDatabaseSpec(cfg, target); sharedDatabase != nil {
 		opts.SharedDatabase = &deploy.SharedDatabaseOptions{
-			Version:  cfg.Database.Shared.Version,
-			Name:     cfg.Database.Shared.Name,
-			User:     cfg.Database.Shared.User,
+			Version:  sharedDatabase.Version,
+			Name:     sharedDatabase.Name,
+			User:     sharedDatabase.User,
 			Password: sharedDatabasePassword,
 		}
 	}
@@ -1295,11 +1300,11 @@ func buildBootstrapOptions(cfg config.Config, target deploy.RemoteTarget) (deplo
 	}
 
 	var sharedDatabase *deploy.SharedDatabaseOptions
-	if cfg.Database != nil && strings.TrimSpace(cfg.Database.Mode) == "shared" && cfg.Database.Shared != nil {
+	if resolved := resolveSharedDatabaseSpec(cfg, target); resolved != nil {
 		sharedDatabase = &deploy.SharedDatabaseOptions{
-			Version: cfg.Database.Shared.Version,
-			Name:    cfg.Database.Shared.Name,
-			User:    cfg.Database.Shared.User,
+			Version: resolved.Version,
+			Name:    resolved.Name,
+			User:    resolved.User,
 		}
 	}
 
@@ -1315,6 +1320,17 @@ func buildBootstrapOptions(cfg config.Config, target deploy.RemoteTarget) (deplo
 		InstallFail2ban:  false,
 		SharedDatabase:   sharedDatabase,
 	}, nil
+}
+
+func remoteAppIdentity(remoteAppPath, fallback string) string {
+	value := strings.TrimSpace(remoteAppPath)
+	if value != "" {
+		base := strings.TrimSpace(filepath.Base(filepath.Clean(value)))
+		if base != "." && base != "/" && base != "" {
+			return base
+		}
+	}
+	return strings.TrimSpace(fallback)
 }
 
 func buildAnalyticsInstallOptions(cfg config.Config, target deploy.RemoteTarget) (deploy.RemoteOptions, error) {

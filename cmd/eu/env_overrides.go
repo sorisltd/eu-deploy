@@ -42,6 +42,24 @@ func firstNonEmptyIntEnv(names ...string) (int, bool) {
 	return parsed, true
 }
 
+func splitCommaSeparatedEnv(value string) []string {
+	parts := strings.Split(value, ",")
+	values := make([]string, 0, len(parts))
+	seen := map[string]struct{}{}
+	for _, part := range parts {
+		trimmed := strings.TrimSpace(part)
+		if trimmed == "" {
+			continue
+		}
+		if _, ok := seen[trimmed]; ok {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		values = append(values, trimmed)
+	}
+	return values
+}
+
 func resolveRemoteProviderSpec(cfg config.Config, target deploy.RemoteTarget) (*config.RemoteProviderSpec, bool) {
 	spec, ok := deploy.RemoteProviderSpecForTarget(cfg, target)
 	if !ok || spec == nil {
@@ -75,6 +93,9 @@ func resolveRemoteProviderSpec(cfg config.Config, target deploy.RemoteTarget) (*
 }
 
 func resolveRouteHostname(cfg config.Config) string {
+	if hostnames := resolveRouteHostnames(cfg); len(hostnames) > 0 {
+		return hostnames[0]
+	}
 	if value := firstNonEmptyEnv("EUDEPLOY_ROUTE_HOSTNAME", "EUDEPLOY_HOSTNAME"); value != "" {
 		return value
 	}
@@ -85,6 +106,9 @@ func resolveRouteHostname(cfg config.Config) string {
 }
 
 func resolveRouteHostnames(cfg config.Config) []string {
+	if value := firstNonEmptyEnv("EUDEPLOY_ROUTE_HOSTNAMES"); value != "" {
+		return splitCommaSeparatedEnv(value)
+	}
 	if value := firstNonEmptyEnv("EUDEPLOY_ROUTE_HOSTNAME", "EUDEPLOY_HOSTNAME"); value != "" {
 		return []string{value}
 	}
@@ -113,6 +137,28 @@ func resolveRouteHostnames(cfg config.Config) []string {
 	}
 
 	return hostnames
+}
+
+func resolveSharedDatabaseSpec(cfg config.Config, target deploy.RemoteTarget) *config.SharedDatabaseSpec {
+	if cfg.Database == nil || strings.TrimSpace(cfg.Database.Mode) != "shared" || cfg.Database.Shared == nil {
+		return nil
+	}
+
+	resolved := *cfg.Database.Shared
+	if value := firstNonEmptyEnv(append([]string{"EUDEPLOY_SHARED_DATABASE_ENGINE"}, envOverrideNames(target, "SHARED_DATABASE_ENGINE")...)...); value != "" {
+		resolved.Engine = value
+	}
+	if value := firstNonEmptyEnv(append([]string{"EUDEPLOY_SHARED_DATABASE_VERSION"}, envOverrideNames(target, "SHARED_DATABASE_VERSION")...)...); value != "" {
+		resolved.Version = value
+	}
+	if value := firstNonEmptyEnv(append([]string{"EUDEPLOY_SHARED_DATABASE_NAME"}, envOverrideNames(target, "SHARED_DATABASE_NAME")...)...); value != "" {
+		resolved.Name = value
+	}
+	if value := firstNonEmptyEnv(append([]string{"EUDEPLOY_SHARED_DATABASE_USER"}, envOverrideNames(target, "SHARED_DATABASE_USER")...)...); value != "" {
+		resolved.User = value
+	}
+
+	return &resolved
 }
 
 func resolveConfigEnvValue(key, configured string) string {
