@@ -859,7 +859,7 @@ func main() {
 			if jsonMode {
 				return emitJSONSuccess(cmd, string(remoteTarget), map[string]any{
 					"release":        jsonReleaseView{ReleaseRecord: record, Current: true},
-					"hostname":       cfg.Routes[0].Hostname,
+					"hostname":       opts.Hostname,
 					"databaseNotice": "database schema changes are not rolled back automatically",
 				})
 			}
@@ -1072,7 +1072,7 @@ func runRemoteDeploy(cmd *cobra.Command, cfg config.Config, wd string, target de
 			map[string]any{
 				"built":      built,
 				"releaseId":  opts.ReleaseID,
-				"hostname":   cfg.Routes[0].Hostname,
+				"hostname":   opts.Hostname,
 				"serverRoot": opts.RemoteServerPath,
 				"appPath":    opts.RemoteAppPath,
 				"artifact":   res.ArtifactPath,
@@ -1086,7 +1086,7 @@ func runRemoteDeploy(cmd *cobra.Command, cfg config.Config, wd string, target de
 	fmt.Printf("OK Release: %s\n", opts.ReleaseID)
 	fmt.Printf("OK Server root: %s\n", opts.RemoteServerPath)
 	fmt.Printf("OK Remote app path: %s\n", opts.RemoteAppPath)
-	fmt.Printf("✓ Running at %s://%s\n", externalRouteScheme(cfg.Routes[0].Hostname), cfg.Routes[0].Hostname)
+	fmt.Printf("✓ Running at %s://%s\n", externalRouteScheme(opts.Hostname), opts.Hostname)
 	return nil
 }
 
