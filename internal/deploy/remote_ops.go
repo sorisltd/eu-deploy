@@ -380,6 +380,7 @@ func renderRollbackRemoteScript(opts RemoteOptions, target ReleaseRecord) string
 		fmt.Sprintf("history_limit=%d", releaseKeepCount(opts)),
 		"if [ -f \"$HISTORY_FILE\" ]; then tail -n \"$history_limit\" \"$HISTORY_FILE\" > \"$HISTORY_FILE.tmp\" && mv \"$HISTORY_FILE.tmp\" \"$HISTORY_FILE\"; fi",
 		cleanup,
+		renderHostCleanupRunCommand(),
 	)
 	return strings.Join(lines, "\n")
 }
@@ -420,6 +421,7 @@ func renderRollbackStaticRemoteScript(opts RemoteOptions, target ReleaseRecord) 
 		fmt.Sprintf("history_limit=%d", releaseKeepCount(opts)),
 		"if [ -f \"$HISTORY_FILE\" ]; then tail -n \"$history_limit\" \"$HISTORY_FILE\" > \"$HISTORY_FILE.tmp\" && mv \"$HISTORY_FILE.tmp\" \"$HISTORY_FILE\"; fi",
 		cleanup,
+		renderHostCleanupRunCommand(),
 	)
 
 	return strings.Join(lines, "\n")

@@ -142,6 +142,7 @@ func renderHetznerBootstrapScript(opts HetznerBootstrapOptions) string {
 			shellQuote(sharedDockerNetwork),
 			shellQuote(sharedDockerNetwork)),
 	}
+	lines = append(lines, renderHostCleanupInstallCommands()...)
 
 	if opts.SharedDatabase != nil {
 		lines = append(lines, renderSharedPostgresBootstrapCommands(opts.RemoteServerPath, *opts.SharedDatabase)...)

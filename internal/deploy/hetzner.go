@@ -677,6 +677,7 @@ func renderHetznerDeployScript(opts RemoteOptions) string {
 		fmt.Sprintf("history_limit=%d", releaseKeepCount(opts)),
 		"if [ -f \"$HISTORY_FILE\" ]; then tail -n \"$history_limit\" \"$HISTORY_FILE\" > \"$HISTORY_FILE.tmp\" && mv \"$HISTORY_FILE.tmp\" \"$HISTORY_FILE\"; fi",
 		cleanup,
+		renderHostCleanupRunCommand(),
 	)
 	return strings.Join(lines, "\n")
 }
@@ -751,6 +752,7 @@ func renderStaticHetznerDeployScript(opts RemoteOptions) string {
 		fmt.Sprintf("history_limit=%d", releaseKeepCount(opts)),
 		"if [ -f \"$HISTORY_FILE\" ]; then tail -n \"$history_limit\" \"$HISTORY_FILE\" > \"$HISTORY_FILE.tmp\" && mv \"$HISTORY_FILE.tmp\" \"$HISTORY_FILE\"; fi",
 		cleanup,
+		renderHostCleanupRunCommand(),
 	)
 	return strings.Join(lines, "\n")
 }

@@ -191,6 +191,12 @@ func TestRenderHetznerBootstrapScript(t *testing.T) {
 		"$SUDO mkdir -p '/opt/eu-deploy/_proxy/sites'",
 		"$SUDO mkdir -p '/var/log/caddy'",
 		"$SUDO docker network inspect 'eu-deploy' >/dev/null 2>&1 || $SUDO docker network create 'eu-deploy' >/dev/null",
+		"cat > '/usr/local/bin/eu-deploy-host-cleanup' <<'EOF'",
+		"docker image prune -af --filter \"until=${IMAGE_MAX_AGE}\"",
+		"docker builder prune -af --filter \"until=${BUILDER_MAX_AGE}\"",
+		"journalctl --vacuum-size=\"${JOURNAL_MAX_SIZE}\"",
+		"cat > '/etc/systemd/system/eu-deploy-host-cleanup.timer' <<'EOF'",
+		"$SUDO systemctl enable --now eu-deploy-host-cleanup.timer",
 		"$SUDO docker run -d --restart unless-stopped --network 'eu-deploy' -p 127.0.0.1:5432:5432 --name 'eu-shared-postgres'",
 		"$SUDO apt-get install -y ufw",
 		"$SUDO apt-get install -y fail2ban",
@@ -235,6 +241,9 @@ func TestRenderHetznerDeployScriptRunsPostDeployCommand(t *testing.T) {
 	}
 	if !strings.Contains(got, `-v '/opt/eu-deploy':'/opt/eu-deploy':ro`) {
 		t.Fatalf("deploy script should mount the remote server root for maintenance/static assets:\n%s", got)
+	}
+	if !strings.Contains(got, `if [ -x /usr/local/bin/eu-deploy-host-cleanup ]; then /usr/local/bin/eu-deploy-host-cleanup >/dev/null 2>&1 || true; fi`) {
+		t.Fatalf("deploy script should run host cleanup when available:\n%s", got)
 	}
 }
 
@@ -401,6 +410,9 @@ func TestRenderStaticHetznerDeployScript(t *testing.T) {
 	}
 	if strings.Contains(got, "docker build -t") {
 		t.Fatalf("static deploy script should not build a docker image:\n%s", got)
+	}
+	if !strings.Contains(got, `if [ -x /usr/local/bin/eu-deploy-host-cleanup ]; then /usr/local/bin/eu-deploy-host-cleanup >/dev/null 2>&1 || true; fi`) {
+		t.Fatalf("static deploy script should run host cleanup when available:\n%s", got)
 	}
 }
 
