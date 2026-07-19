@@ -1070,11 +1070,11 @@ var cloudflareTrustedProxyRanges = []string{
 func renderRootCaddyfile() string {
 	lines := []string{
 		"{",
-		"  servers {",
-		"    trusted_proxies static " + strings.Join(cloudflareTrustedProxyRanges, " "),
-		"    client_ip_headers CF-Connecting-IP",
-		"    trusted_proxies_strict",
-		"  }",
+		"\tservers {",
+		"\t\ttrusted_proxies static " + strings.Join(cloudflareTrustedProxyRanges, " "),
+		"\t\tclient_ip_headers CF-Connecting-IP",
+		"\t\ttrusted_proxies_strict",
+		"\t}",
 		"}",
 		"",
 		"import /etc/caddy/sites/*.caddy",

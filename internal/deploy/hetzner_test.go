@@ -119,7 +119,12 @@ func TestRenderMaintenanceSiteCaddyfileWithIPAddressUsesHTTP(t *testing.T) {
 func TestRenderRootCaddyfile(t *testing.T) {
 	got := renderRootCaddyfile()
 
+	if strings.Contains(got, "  servers {") {
+		t.Fatalf("root caddyfile should use canonical tab indentation:\n%s", got)
+	}
 	for _, expected := range []string{
+		"\tservers {",
+		"\t\ttrusted_proxies static 173.245.48.0/20",
 		"trusted_proxies static 173.245.48.0/20",
 		"2c0f:f248::/32",
 		"client_ip_headers CF-Connecting-IP",
