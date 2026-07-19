@@ -1,0 +1,7 @@
+bustora.lt {
+  encode zstd gzip
+  route {
+    import /opt/eu-deploy/_proxy/routes/bustora.lt/*.caddy
+    respond 404
+  }
+}

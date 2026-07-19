@@ -116,16 +116,34 @@ func resolveRouteHostnames(cfg config.Config) []string {
 		return nil
 	}
 
-	primaryPath := strings.TrimSpace(cfg.Routes[0].Path)
-	primaryTarget := strings.TrimSpace(cfg.Routes[0].Target)
+	primary := cfg.Routes[0]
+	primaryPath := strings.TrimSpace(primary.Path)
+	primaryTarget := strings.TrimSpace(primary.Target)
+	primaryRedirect := strings.TrimSpace(primary.Redirect)
 	seen := map[string]struct{}{}
 	hostnames := make([]string, 0, len(cfg.Routes))
 
 	for _, route := range cfg.Routes {
-		if strings.TrimSpace(route.Path) != primaryPath || strings.TrimSpace(route.Target) != primaryTarget {
+		if strings.TrimSpace(route.Path) != primaryPath || strings.TrimSpace(route.Target) != primaryTarget || strings.TrimSpace(route.Redirect) != primaryRedirect {
 			continue
 		}
-		hostname := strings.TrimSpace(route.Hostname)
+		for _, hostname := range routeSpecHostnames(route) {
+			if _, ok := seen[hostname]; ok {
+				continue
+			}
+			seen[hostname] = struct{}{}
+			hostnames = append(hostnames, hostname)
+		}
+	}
+
+	return hostnames
+}
+
+func routeSpecHostnames(route config.RouteSpec) []string {
+	seen := map[string]struct{}{}
+	result := make([]string, 0, len(route.Hostnames)+1)
+	for _, hostname := range append([]string{route.Hostname}, route.Hostnames...) {
+		hostname = strings.TrimSpace(hostname)
 		if hostname == "" {
 			continue
 		}
@@ -133,10 +151,9 @@ func resolveRouteHostnames(cfg config.Config) []string {
 			continue
 		}
 		seen[hostname] = struct{}{}
-		hostnames = append(hostnames, hostname)
+		result = append(result, hostname)
 	}
-
-	return hostnames
+	return result
 }
 
 func resolveSharedDatabaseSpec(cfg config.Config, target deploy.RemoteTarget) *config.SharedDatabaseSpec {

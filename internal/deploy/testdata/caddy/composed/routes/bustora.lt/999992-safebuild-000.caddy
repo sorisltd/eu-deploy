@@ -1,0 +1,10 @@
+handle_path /darbai/assets/* {
+  encode zstd gzip
+  header Cache-Control "public, max-age=3600"
+  reverse_proxy 127.0.0.1:9000 {
+    header_up Host eu-safebuild-minio:9000
+  }
+}
+handle /darbai* {
+  reverse_proxy 127.0.0.1:3008
+}

@@ -1028,8 +1028,8 @@ func runRemoteDeploy(cmd *cobra.Command, cfg config.Config, wd string, target de
 	} else {
 		return fmt.Errorf("unsupported runtime.type: %s", runtimeType)
 	}
-	if len(cfg.Routes) == 0 || strings.TrimSpace(cfg.Routes[0].Hostname) == "" {
-		return fmt.Errorf("routes[0].hostname is required for remote deploys")
+	if len(cfg.Routes) == 0 || resolveRouteHostname(cfg) == "" {
+		return fmt.Errorf("routes[0] requires hostname or hostnames for remote deploys")
 	}
 
 	installDependencies, err := build.RequiresDependencyInstall(cfg, wd)
@@ -1161,6 +1161,9 @@ func runRemotePreflight(cmd *cobra.Command, cfg config.Config, wd string, target
 }
 
 func buildRemoteOptions(cfg config.Config, wd string, target deploy.RemoteTarget, artifactSHA, sharedDatabasePassword string) (deploy.RemoteOptions, error) {
+	if err := config.ValidateRoutes(cfg.Routes); err != nil {
+		return deploy.RemoteOptions{}, err
+	}
 	spec, ok := resolveRemoteProviderSpec(cfg, target)
 	if !ok || spec == nil {
 		return deploy.RemoteOptions{}, fmt.Errorf("%s config is missing", target)
@@ -1173,6 +1176,10 @@ func buildRemoteOptions(cfg config.Config, wd string, target deploy.RemoteTarget
 	primaryHostname := resolveRouteHostname(cfg)
 	if primaryHostname == "" && len(hostnames) > 0 {
 		primaryHostname = hostnames[0]
+	}
+	remoteRoutes, err := buildRemoteRoutes(wd, cfg.Routes)
+	if err != nil {
+		return deploy.RemoteOptions{}, err
 	}
 	opts := deploy.RemoteOptions{
 		Provider:           target,
@@ -1196,6 +1203,7 @@ func buildRemoteOptions(cfg config.Config, wd string, target deploy.RemoteTarget
 		Hostname:           primaryHostname,
 		Hostnames:          hostnames,
 		RoutePath:          cfg.Routes[0].Path,
+		Routes:             remoteRoutes,
 		AnalyticsLogName:   deploy.BuildAnalyticsLogName(appIdentity),
 		HealthcheckPath:    cfg.Runtime.Healthcheck.Path,
 		SiteConfigName:     deploy.BuildHetznerSiteConfigName(primaryHostname),
@@ -1222,6 +1230,33 @@ func buildRemoteOptions(cfg config.Config, wd string, target deploy.RemoteTarget
 	}
 
 	return opts, nil
+}
+
+func buildRemoteRoutes(workDir string, specs []config.RouteSpec) ([]deploy.RemoteRoute, error) {
+	routes := make([]deploy.RemoteRoute, 0, len(specs))
+	for index, spec := range specs {
+		code := spec.Code
+		if strings.TrimSpace(spec.Redirect) != "" && code == 0 {
+			code = 301
+		}
+		extra := ""
+		if extraFile := strings.TrimSpace(spec.CaddyExtraFile); extraFile != "" {
+			contents, err := os.ReadFile(filepath.Join(workDir, filepath.Clean(extraFile)))
+			if err != nil {
+				return nil, fmt.Errorf("routes[%d].caddy_extra_file: %w", index, err)
+			}
+			extra = strings.TrimSpace(string(contents))
+		}
+		routes = append(routes, deploy.RemoteRoute{
+			Hostnames:      routeSpecHostnames(spec),
+			Path:           spec.Path,
+			PreservePrefix: spec.PreservePrefix,
+			Redirect:       strings.TrimSpace(spec.Redirect),
+			Code:           code,
+			CaddyExtra:     extra,
+		})
+	}
+	return routes, nil
 }
 
 func loadConfigFromWorkingDir() (config.Config, string, string, error) {

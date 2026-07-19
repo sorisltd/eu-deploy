@@ -1,6 +1,8 @@
 package config
 
 import (
+	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -60,9 +62,60 @@ type RuntimeSpec struct {
 }
 
 type RouteSpec struct {
-	Hostname string `yaml:"hostname"`
-	Path     string `yaml:"path"`
-	Target   string `yaml:"target"` // web
+	Hostname       string   `yaml:"hostname,omitempty"`
+	Hostnames      []string `yaml:"hostnames,omitempty"`
+	Path           string   `yaml:"path,omitempty"`
+	Target         string   `yaml:"target,omitempty"` // web
+	PreservePrefix bool     `yaml:"preserve_prefix,omitempty"`
+	Redirect       string   `yaml:"redirect,omitempty"`
+	Code           int      `yaml:"code,omitempty"`
+	CaddyExtraFile string   `yaml:"caddy_extra_file,omitempty"`
+}
+
+func ValidateRoutes(routes []RouteSpec) error {
+	for index, route := range routes {
+		hostCount := 0
+		if strings.TrimSpace(route.Hostname) != "" {
+			hostCount++
+		}
+		for _, hostname := range route.Hostnames {
+			if strings.TrimSpace(hostname) != "" {
+				hostCount++
+			}
+		}
+		if hostCount == 0 {
+			return fmt.Errorf("routes[%d] requires hostname or hostnames", index)
+		}
+
+		redirect := strings.TrimSpace(route.Redirect)
+		if redirect == "" {
+			if strings.TrimSpace(route.Target) == "" {
+				return fmt.Errorf("routes[%d].target is required for proxy routes", index)
+			}
+			if route.Code != 0 {
+				return fmt.Errorf("routes[%d].code is only valid with redirect", index)
+			}
+			continue
+		}
+
+		if strings.TrimSpace(route.Target) != "" {
+			return fmt.Errorf("routes[%d] cannot set both target and redirect", index)
+		}
+		if route.PreservePrefix {
+			return fmt.Errorf("routes[%d].preserve_prefix is only valid for proxy routes", index)
+		}
+		if strings.TrimSpace(route.CaddyExtraFile) != "" {
+			return fmt.Errorf("routes[%d].caddy_extra_file is only valid for proxy routes", index)
+		}
+		target, err := url.Parse(redirect)
+		if err != nil || target.Scheme != "https" || target.Host == "" || !target.IsAbs() {
+			return fmt.Errorf("routes[%d].redirect must be an absolute https URL", index)
+		}
+		if route.Code != 0 && route.Code != 301 && route.Code != 302 && route.Code != 307 && route.Code != 308 {
+			return fmt.Errorf("routes[%d].code must be 301, 302, 307, or 308", index)
+		}
+	}
+	return nil
 }
 
 type EnvSpec struct {

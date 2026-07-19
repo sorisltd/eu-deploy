@@ -250,8 +250,15 @@ func renderDestroyRemoteScript(opts RemoteOptions, dropDatabase bool) string {
 		lines = append(lines, renderSharedDatabaseDestroy(opts)...)
 	}
 
+	if len(opts.Routes) > 0 {
+		lines = append(lines, renderManagedRouteRemovalCommands(opts)...)
+	}
+	siteRemoval := fmt.Sprintf("rm -f %s", shellQuote(siteConfigPath))
+	if len(opts.Routes) > 0 {
+		siteRemoval = "true"
+	}
 	lines = append(lines,
-		fmt.Sprintf("rm -f %s %s %s", shellQuote(siteConfigPath), shellQuote(activeSlotPath(opts)), shellQuote(currentReleasePath(opts))),
+		fmt.Sprintf("%s; rm -f %s %s", siteRemoval, shellQuote(activeSlotPath(opts)), shellQuote(currentReleasePath(opts))),
 		fmt.Sprintf("rm -f %s || true", shellQuote(releaseHistoryPath(opts))),
 		fmt.Sprintf("rm -rf %s || true", shellQuote(opts.RemoteAppPath)),
 		fmt.Sprintf("docker images --format '{{.Repository}}:{{.Tag}}' | grep -F %s | while read -r image; do docker image rm -f \"$image\" >/dev/null 2>&1 || true; done || true",
@@ -368,7 +375,11 @@ func renderRollbackRemoteScript(opts RemoteOptions, target ReleaseRecord) string
 		"done",
 		"TARGET_PORT=\"$next_port\"",
 	}
-	lines = append(lines, renderMaintenanceAwareSiteConfigCommands(opts, siteConfigPath, nextSiteCaddy)...)
+	if len(opts.Routes) > 0 {
+		lines = append(lines, renderManagedRouteConfigCommands(opts, "127.0.0.1:${TARGET_PORT}")...)
+	} else {
+		lines = append(lines, renderMaintenanceAwareSiteConfigCommands(opts, siteConfigPath, nextSiteCaddy)...)
+	}
 	lines = append(lines, renderProxyReloadCommands(opts, rootCaddyPath, proxySitesDir, proxyDataPath, proxyConfigPath)...)
 	lines = append(lines,
 		"if docker ps --format '{{.Names}}' | grep -Fx -- \"$old_container\" >/dev/null 2>&1; then",

@@ -226,6 +226,54 @@ The remote targets upload the build artifact, generate a remote Docker image, ru
 - optional: one shared PostgreSQL container serves multiple apps, each with its own database and role
 - optional: a post-deploy hook can run inside the app container before deploy healthcheck succeeds
 
+### Routes
+
+Proxy routes keep the historical prefix-stripping behavior by default:
+
+```yaml
+routes:
+  - hostname: example.com
+    path: /docs
+    target: web
+```
+
+This renders `handle_path /docs*`. Applications that require the original prefix, such as a Next.js `basePath`, can opt in per route:
+
+```yaml
+routes:
+  - hostname: bustora.lt
+    path: /darbai
+    target: web
+    preserve_prefix: true
+```
+
+This renders `handle /darbai*`. eu-deploy stores app-owned route fragments in `<server_path>/_proxy/routes/<hostname>/` and generates one site block per hostname. Fragments are ordered by path specificity, with root last, so independently deployed apps can share a hostname without overwriting each other. When converting an existing hostname, deploy the root app first and then path apps so the old hostname-owned site file is replaced by the route registry before extra fragments are added.
+
+Pure HTTPS redirects use `redirect`; `code` defaults to `301`. `hostnames` groups aliases into the same route:
+
+```yaml
+routes:
+  - hostnames:
+      - safebuild.lt
+      - www.safebuild.lt
+    redirect: https://bustora.lt/meistrams
+    code: 301
+```
+
+Redirect targets must be absolute `https` URLs. Supported explicit codes are `301`, `302`, `307`, and `308`.
+
+For reviewed directives that do not fit the route schema, `caddy_extra_file` reads a repo-local file and emits it verbatim immediately before that route's generated handler. This is suitable for a more-specific handler such as an asset proxy; the file is trusted configuration and should be code-reviewed.
+
+```yaml
+  - hostname: bustora.lt
+    path: /darbai
+    target: web
+    preserve_prefix: true
+    caddy_extra_file: deploy/caddy/bustora-darbai-assets.caddy
+```
+
+Shared-host route composition currently applies to web deploy, rollback, and destroy. The root/last route owns the hostname's Caddy access log, so path-module traffic is currently attributed to that shared host log rather than a separate module log. Do not enable eu-deploy maintenance mode for an app sharing a hostname until maintenance is route-fragment aware; its existing site-level maintenance renderer would replace the composed site.
+
 ## Forgejo Actions
 
 For a Vercel-style flow, use:

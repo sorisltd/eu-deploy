@@ -1,0 +1,12 @@
+bustora.lt {
+  handle /darbai* {
+    reverse_proxy 127.0.0.1:3008
+  }
+  handle {
+    reverse_proxy 127.0.0.1:3010
+  }
+}
+
+safebuild.lt, www.safebuild.lt {
+  redir https://bustora.lt/meistrams 301
+}

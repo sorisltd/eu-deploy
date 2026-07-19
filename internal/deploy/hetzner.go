@@ -50,6 +50,7 @@ type RemoteOptions struct {
 	Hostname            string
 	Hostnames           []string
 	RoutePath           string
+	Routes              []RemoteRoute
 	AnalyticsLogName    string
 	HealthcheckPath     string
 	SiteConfigName      string
@@ -59,6 +60,15 @@ type RemoteOptions struct {
 	KeepReleases        int
 	Packages            []string
 	Volumes             []string
+}
+
+type RemoteRoute struct {
+	Hostnames      []string
+	Path           string
+	PreservePrefix bool
+	Redirect       string
+	Code           int
+	CaddyExtra     string
 }
 
 type HetznerOptions = RemoteOptions
@@ -179,7 +189,7 @@ func PrepareRemoteConfig(cfg *config.Config, workDir string, target RemoteTarget
 		cfg.Routes[0].Path = "/"
 		changed = true
 	}
-	if isPlaceholderHostname(cfg.Routes[0].Hostname) {
+	if len(cfg.Routes[0].Hostnames) == 0 && isPlaceholderHostname(cfg.Routes[0].Hostname) {
 		value, err := p.String("Public hostname", "", true)
 		if err != nil {
 			return PrepareRemoteResult{}, err
@@ -660,7 +670,11 @@ func renderHetznerDeployScript(opts RemoteOptions) string {
 		"done",
 		"TARGET_PORT=\"$next_port\"",
 	)
-	lines = append(lines, renderMaintenanceAwareSiteConfigCommands(opts, siteConfigPath, nextSiteCaddy)...)
+	if len(opts.Routes) > 0 {
+		lines = append(lines, renderManagedRouteConfigCommands(opts, "127.0.0.1:${TARGET_PORT}")...)
+	} else {
+		lines = append(lines, renderMaintenanceAwareSiteConfigCommands(opts, siteConfigPath, nextSiteCaddy)...)
+	}
 	lines = append(lines, renderProxyReloadCommands(opts, rootCaddyPath, proxySitesDir, proxyDataPath, proxyConfigPath)...)
 	lines = append(lines,
 		"if docker ps --format '{{.Names}}' | grep -Fx -- \"$old_container\" >/dev/null 2>&1; then",

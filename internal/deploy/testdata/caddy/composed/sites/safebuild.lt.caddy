@@ -1,0 +1,7 @@
+safebuild.lt {
+  encode zstd gzip
+  route {
+    import /opt/eu-deploy/_proxy/routes/safebuild.lt/*.caddy
+    respond 404
+  }
+}
