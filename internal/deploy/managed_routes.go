@@ -41,14 +41,25 @@ func renderManagedRouteConfigCommands(opts RemoteOptions, upstream string) []str
 		routeDir := filepath.ToSlash(filepath.Join(routesRoot, safeHost))
 		fragment := filepath.ToSlash(filepath.Join(routeDir, managedRouteFragmentName(project, binding.route, index)))
 		content := renderManagedRouteFragment(binding.route, upstream)
+		maintenanceContent := renderManagedMaintenanceRouteFragment(binding.route, maintenanceRootPath(opts))
+		statePath := maintenanceStatePath(opts)
 		lines = append(lines, fmt.Sprintf("mkdir -p %s", shellQuote(routeDir)))
-		if extra := strings.TrimSpace(binding.route.CaddyExtra); extra != "" {
-			lines = append(lines, fmt.Sprintf("cat > %s <<'EUDEPLOY_CADDY_EXTRA'\n%s\nEUDEPLOY_CADDY_EXTRA", shellQuote(fragment), extra))
-		} else {
-			lines = append(lines, fmt.Sprintf(": > %s", shellQuote(fragment)))
-		}
+		extra := strings.TrimSpace(binding.route.CaddyExtra)
 		lines = append(lines,
-			fmt.Sprintf("cat >> %s <<EOF\n%sEOF", shellQuote(fragment), content),
+			fmt.Sprintf("if [ -f %s ] && grep -Eq '\"enabled\"[[:space:]]*:[[:space:]]*true' %s; then", shellQuote(statePath), shellQuote(statePath)),
+			fmt.Sprintf("  cat > %s <<'EUDEPLOY_MAINTENANCE_ROUTE'\n%sEUDEPLOY_MAINTENANCE_ROUTE", shellQuote(fragment), maintenanceContent),
+			"else",
+		)
+		if extra != "" {
+			lines = append(lines,
+				fmt.Sprintf("  cat > %s <<'EUDEPLOY_CADDY_EXTRA'\n%s\nEUDEPLOY_CADDY_EXTRA", shellQuote(fragment), extra),
+				fmt.Sprintf("  cat >> %s <<EOF\n%sEOF", shellQuote(fragment), content),
+			)
+		} else {
+			lines = append(lines, fmt.Sprintf("  cat > %s <<EOF\n%sEOF", shellQuote(fragment), content))
+		}
+		lines = append(lines, "fi")
+		lines = append(lines,
 			fmt.Sprintf("printf '%%s\\n' %s > %s", shellQuote(opts.AnalyticsLogName), shellQuote(fragment+".log")),
 			fmt.Sprintf("printf '%%s|%%s|%%s\\n' %s %s %s >> %s", shellQuote(binding.hostname), shellQuote(safeHost), shellQuote(fragment), shellQuote(marker)),
 			fmt.Sprintf("printf '%%s|%%s\\n' %s %s >> %s", shellQuote(binding.hostname), shellQuote(safeHost), shellQuote(affected)),
@@ -83,6 +94,30 @@ func renderManagedRouteConfigCommands(opts RemoteOptions, upstream string) []str
 		fmt.Sprintf("rm -f %s", shellQuote(affected)),
 	)
 	return lines
+}
+
+func renderManagedMaintenanceRouteFragment(route RemoteRoute, rootPath string) string {
+	path := normalizeRoutePath(route.Path)
+	if path == "/" {
+		return strings.Join([]string{
+			"handle {",
+			`  header Cache-Control "no-store"`,
+			fmt.Sprintf("  root * %s", rootPath),
+			"  try_files {path} /index.html",
+			"  file_server",
+			"}",
+			"",
+		}, "\n")
+	}
+	return strings.Join([]string{
+		fmt.Sprintf("handle_path %s* {", path),
+		`  header Cache-Control "no-store"`,
+		fmt.Sprintf("  root * %s", rootPath),
+		"  try_files {path} /index.html",
+		"  file_server",
+		"}",
+		"",
+	}, "\n")
 }
 
 func renderManagedRouteRemovalCommands(opts RemoteOptions) []string {

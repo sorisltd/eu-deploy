@@ -272,7 +272,7 @@ For reviewed directives that do not fit the route schema, `caddy_extra_file` rea
     caddy_extra_file: deploy/caddy/bustora-darbai-assets.caddy
 ```
 
-Shared-host route composition currently applies to web deploy, rollback, and destroy. The root/last route owns the hostname's Caddy access log, so path-module traffic is currently attributed to that shared host log rather than a separate module log. Do not enable eu-deploy maintenance mode for an app sharing a hostname until maintenance is route-fragment aware; its existing site-level maintenance renderer would replace the composed site.
+Shared-host route composition applies to web deploy, rollback, destroy, and maintenance mode. Maintenance is route-scoped: pausing a path app replaces only that app's fragment, while sibling paths and the root app remain live. Pausing the root app replaces only its catch-all fragment, so more-specific path apps remain live. The root/last route owns the hostname's Caddy access log, so path-module traffic is currently attributed to that shared host log rather than a separate module log.
 
 ## Forgejo Actions
 

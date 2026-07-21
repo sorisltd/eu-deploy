@@ -486,6 +486,50 @@ func TestRenderDisableRemoteMaintenanceScriptRestoresLiveSite(t *testing.T) {
 	}
 }
 
+func TestRenderManagedMaintenanceScriptsRecomposeSharedHost(t *testing.T) {
+	opts := HetznerOptions{
+		RuntimeType:        "web",
+		ProjectName:        "safebuild",
+		RemoteServerPath:   "/opt/eu-deploy",
+		RemoteAppPath:      "/opt/eu-deploy/apps/safebuild",
+		RemoteHost:         "example.com",
+		RemoteUser:         "root",
+		RemotePort:         22,
+		ServicePort:        3008,
+		AppContainerName:   "eu-safebuild-app",
+		ProxyContainerName: "eu-shared-caddy",
+		Hostname:           "bustora.lt",
+		Hostnames:          []string{"bustora.lt"},
+		RoutePath:          "/darbai",
+		SiteConfigName:     "bustora.lt.caddy",
+		AnalyticsLogName:   "safebuild",
+		Routes: []RemoteRoute{{
+			Hostnames:      []string{"bustora.lt"},
+			Path:           "/darbai",
+			PreservePrefix: true,
+		}},
+	}
+
+	for name, script := range map[string]string{
+		"enable":  renderEnableRemoteMaintenanceScript(opts, "Updating SafeBuild"),
+		"disable": renderDisableRemoteMaintenanceScript(opts),
+	} {
+		for _, expected := range []string{
+			"/opt/eu-deploy/_proxy/routes/bustora.lt",
+			"999992-safebuild-000.caddy",
+			"import /opt/eu-deploy/_proxy/routes/%s/*.caddy",
+			"docker exec 'eu-shared-caddy' caddy reload",
+		} {
+			if !strings.Contains(script, expected) {
+				t.Fatalf("%s script does not recompose and reload shared host; missing %q:\n%s", name, expected, script)
+			}
+		}
+		if strings.Contains(script, "bustora.lt {\n  encode zstd gzip\n  header Cache-Control") {
+			t.Fatalf("%s script still replaces the shared hostname with a site-level maintenance config:\n%s", name, script)
+		}
+	}
+}
+
 func TestRenderStaticRollbackRemoteScript(t *testing.T) {
 	got := renderRollbackRemoteScript(HetznerOptions{
 		RuntimeType:        "static",

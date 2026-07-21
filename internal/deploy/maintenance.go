@@ -57,11 +57,9 @@ func renderEnableRemoteMaintenanceScript(opts RemoteOptions, message string) str
 	rootCaddyPath := filepath.ToSlash(filepath.Join(proxyRoot, "Caddyfile"))
 	proxyDataPath := filepath.ToSlash(filepath.Join(proxyRoot, "data"))
 	proxyConfigPath := filepath.ToSlash(filepath.Join(proxyRoot, "config"))
-	siteConfigPath := filepath.ToSlash(filepath.Join(proxySitesDir, opts.SiteConfigName))
 	maintenanceRoot := maintenanceRootPath(opts)
 	maintenanceIndex := maintenanceIndexPath(opts)
 	statePath := maintenanceStatePath(opts)
-	siteCaddy := renderMaintenanceSiteCaddyfile(opts.Hostnames, opts.RoutePath, maintenanceRoot)
 	messageJSON, _ := json.Marshal(strings.TrimSpace(message))
 
 	lines := []string{
@@ -70,7 +68,14 @@ func renderEnableRemoteMaintenanceScript(opts RemoteOptions, message string) str
 		fmt.Sprintf("cat > %s <<'EOF'\n%sEOF", shellQuote(maintenanceIndex), renderMaintenanceHTML(opts.ProjectName, message)),
 		fmt.Sprintf("cat > %s <<EOF\n{\n  \"enabled\": true,\n  \"enabledAt\": \"$(date -u +%%Y-%%m-%%dT%%H:%%M:%%SZ)\",\n  \"message\": %s\n}\nEOF", shellQuote(statePath), string(messageJSON)),
 		fmt.Sprintf("cat > %s <<'EOF'\n%sEOF", shellQuote(rootCaddyPath), renderRootCaddyfile()),
-		fmt.Sprintf("cat > %s <<'EOF'\n%sEOF", shellQuote(siteConfigPath), siteCaddy),
+	}
+	if len(opts.Routes) > 0 {
+		lines = append(lines, renderActiveTargetPortCommands(opts)...)
+		lines = append(lines, renderManagedRouteConfigCommands(opts, "127.0.0.1:${TARGET_PORT}")...)
+	} else {
+		siteConfigPath := filepath.ToSlash(filepath.Join(proxySitesDir, opts.SiteConfigName))
+		siteCaddy := renderMaintenanceSiteCaddyfile(opts.Hostnames, opts.RoutePath, maintenanceRoot)
+		lines = append(lines, fmt.Sprintf("cat > %s <<'EOF'\n%sEOF", shellQuote(siteConfigPath), siteCaddy))
 	}
 	lines = append(lines, renderProxyReloadCommands(opts, rootCaddyPath, proxySitesDir, proxyDataPath, proxyConfigPath)...)
 
@@ -83,7 +88,6 @@ func renderDisableRemoteMaintenanceScript(opts RemoteOptions) string {
 	rootCaddyPath := filepath.ToSlash(filepath.Join(proxyRoot, "Caddyfile"))
 	proxyDataPath := filepath.ToSlash(filepath.Join(proxyRoot, "data"))
 	proxyConfigPath := filepath.ToSlash(filepath.Join(proxyRoot, "config"))
-	siteConfigPath := filepath.ToSlash(filepath.Join(proxySitesDir, opts.SiteConfigName))
 	statePath := maintenanceStatePath(opts)
 	maintenanceRoot := maintenanceRootPath(opts)
 
@@ -94,34 +98,18 @@ func renderDisableRemoteMaintenanceScript(opts RemoteOptions) string {
 		fmt.Sprintf("cat > %s <<'EOF'\n%sEOF", shellQuote(rootCaddyPath), renderRootCaddyfile()),
 	}
 
-	if isStaticRuntime(opts.RuntimeType) {
+	if len(opts.Routes) > 0 {
+		lines = append(lines, renderActiveTargetPortCommands(opts)...)
+		lines = append(lines, renderManagedRouteConfigCommands(opts, "127.0.0.1:${TARGET_PORT}")...)
+	} else if isStaticRuntime(opts.RuntimeType) {
+		siteConfigPath := filepath.ToSlash(filepath.Join(proxySitesDir, opts.SiteConfigName))
 		siteCaddy := renderStaticSiteCaddyfile(opts.Hostnames, opts.RoutePath, staticCurrentRootPath(opts), opts.AnalyticsLogName)
 		lines = append(lines, fmt.Sprintf("cat > %s <<'EOF'\n%sEOF", shellQuote(siteConfigPath), siteCaddy))
 	} else {
-		primaryPort, secondaryPort := releaseSlotPorts(opts.ServicePort)
+		siteConfigPath := filepath.ToSlash(filepath.Join(proxySitesDir, opts.SiteConfigName))
 		liveSiteCaddy := renderSiteCaddyfileWithUpstream(opts.Hostnames, opts.RoutePath, "127.0.0.1:${TARGET_PORT}", opts.AnalyticsLogName)
+		lines = append(lines, renderActiveTargetPortCommands(opts)...)
 		lines = append(lines,
-			fmt.Sprintf("PRIMARY_PORT=%d", primaryPort),
-			fmt.Sprintf("SECONDARY_PORT=%d", secondaryPort),
-			fmt.Sprintf("ACTIVE_SLOT_FILE=%s", shellQuote(activeSlotPath(opts))),
-			fmt.Sprintf("APP_CONTAINER_BASE=%s", shellQuote(opts.AppContainerName)),
-			"active_slot=''",
-			`if [ -f "$ACTIVE_SLOT_FILE" ]; then active_slot="$(tr -d '\r\n' < "$ACTIVE_SLOT_FILE")"; fi`,
-			`legacy_container="$APP_CONTAINER_BASE"`,
-			`if [ -z "$active_slot" ] && docker ps --format '{{.Names}}' | grep -Fx -- "${APP_CONTAINER_BASE}-a" >/dev/null 2>&1; then`,
-			`  active_slot='a'`,
-			"fi",
-			`if [ -z "$active_slot" ] && docker ps --format '{{.Names}}' | grep -Fx -- "${APP_CONTAINER_BASE}-b" >/dev/null 2>&1; then`,
-			`  active_slot='b'`,
-			"fi",
-			`if [ -z "$active_slot" ] && docker ps --format '{{.Names}}' | grep -Fx -- "$legacy_container" >/dev/null 2>&1; then`,
-			`  active_slot='a'`,
-			"fi",
-			"if [ \"$active_slot\" = 'b' ]; then",
-			"  TARGET_PORT=$SECONDARY_PORT",
-			"else",
-			"  TARGET_PORT=$PRIMARY_PORT",
-			"fi",
 			fmt.Sprintf("cat > %s <<EOF\n%sEOF", shellQuote(siteConfigPath), liveSiteCaddy),
 		)
 	}
@@ -129,6 +117,33 @@ func renderDisableRemoteMaintenanceScript(opts RemoteOptions) string {
 	lines = append(lines, renderProxyReloadCommands(opts, rootCaddyPath, proxySitesDir, proxyDataPath, proxyConfigPath)...)
 
 	return strings.Join(lines, "\n")
+}
+
+func renderActiveTargetPortCommands(opts RemoteOptions) []string {
+	primaryPort, secondaryPort := releaseSlotPorts(opts.ServicePort)
+	return []string{
+		fmt.Sprintf("PRIMARY_PORT=%d", primaryPort),
+		fmt.Sprintf("SECONDARY_PORT=%d", secondaryPort),
+		fmt.Sprintf("ACTIVE_SLOT_FILE=%s", shellQuote(activeSlotPath(opts))),
+		fmt.Sprintf("APP_CONTAINER_BASE=%s", shellQuote(opts.AppContainerName)),
+		"active_slot=''",
+		`if [ -f "$ACTIVE_SLOT_FILE" ]; then active_slot="$(tr -d '\r\n' < "$ACTIVE_SLOT_FILE")"; fi`,
+		`legacy_container="$APP_CONTAINER_BASE"`,
+		`if [ -z "$active_slot" ] && docker ps --format '{{.Names}}' | grep -Fx -- "${APP_CONTAINER_BASE}-a" >/dev/null 2>&1; then`,
+		`  active_slot='a'`,
+		"fi",
+		`if [ -z "$active_slot" ] && docker ps --format '{{.Names}}' | grep -Fx -- "${APP_CONTAINER_BASE}-b" >/dev/null 2>&1; then`,
+		`  active_slot='b'`,
+		"fi",
+		`if [ -z "$active_slot" ] && docker ps --format '{{.Names}}' | grep -Fx -- "$legacy_container" >/dev/null 2>&1; then`,
+		`  active_slot='a'`,
+		"fi",
+		"if [ \"$active_slot\" = 'b' ]; then",
+		"  TARGET_PORT=$SECONDARY_PORT",
+		"else",
+		"  TARGET_PORT=$PRIMARY_PORT",
+		"fi",
+	}
 }
 
 func renderRemoteMaintenanceStatusCommand(opts RemoteOptions) string {

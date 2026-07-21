@@ -143,3 +143,80 @@ func TestManagedRouteCommandsComposeSequentialDeploys(t *testing.T) {
 		t.Fatalf("root route should own shared access log:\n%s", site)
 	}
 }
+
+func TestManagedRouteDeployRebuildsSharedHostFromCurrentMaintenanceState(t *testing.T) {
+	serverRoot := t.TempDir()
+	bustoraApp := filepath.Join(serverRoot, "apps", "bustora")
+	safebuildApp := filepath.Join(serverRoot, "apps", "safebuild")
+	for _, path := range []string{bustoraApp, safebuildApp, filepath.Join(serverRoot, "_proxy", "sites")} {
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", path, err)
+		}
+	}
+
+	bustora := RemoteOptions{
+		ProjectName:      "bustora",
+		AnalyticsLogName: "bustora",
+		RemoteServerPath: serverRoot,
+		RemoteAppPath:    bustoraApp,
+		Routes:           []RemoteRoute{{Hostnames: []string{"bustora.lt"}, Path: "/"}},
+	}
+	safebuild := RemoteOptions{
+		ProjectName:      "safebuild",
+		AnalyticsLogName: "safebuild",
+		RemoteServerPath: serverRoot,
+		RemoteAppPath:    safebuildApp,
+		Routes:           []RemoteRoute{{Hostnames: []string{"bustora.lt"}, Path: "/darbai", PreservePrefix: true}},
+	}
+	run := func(port string, opts RemoteOptions) {
+		t.Helper()
+		script := strings.Join(renderManagedRouteConfigCommands(opts, "127.0.0.1:${TARGET_PORT}"), "\n")
+		command := exec.Command("bash", "-c", "set -euo pipefail\n"+script)
+		command.Env = append(os.Environ(), "TARGET_PORT="+port)
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("route script failed: %v\n%s\n--- script ---\n%s", err, output, script)
+		}
+	}
+	read := func(path string) string {
+		t.Helper()
+		contents, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		return string(contents)
+	}
+
+	run("3010", bustora)
+	run("3008", safebuild)
+	if err := os.WriteFile(filepath.Join(safebuildApp, "maintenance.json"), []byte(`{"enabled":true}`), 0o644); err != nil {
+		t.Fatalf("write maintenance state: %v", err)
+	}
+	run("3009", safebuild)
+
+	routeDir := filepath.Join(serverRoot, "_proxy", "routes", "bustora.lt")
+	sitePath := filepath.Join(serverRoot, "_proxy", "sites", "bustora.lt.caddy")
+	bustoraFragment := read(filepath.Join(routeDir, "999999-bustora-000.caddy"))
+	safebuildFragment := read(filepath.Join(routeDir, "999992-safebuild-000.caddy"))
+	site := read(sitePath)
+	if !strings.Contains(bustoraFragment, "reverse_proxy 127.0.0.1:3010") {
+		t.Fatalf("deploying maintained app dropped the sibling fragment:\n%s", bustoraFragment)
+	}
+	if !strings.Contains(safebuildFragment, "root * "+filepath.Join(safebuildApp, "maintenance")) || strings.Contains(safebuildFragment, "reverse_proxy") {
+		t.Fatalf("maintained app did not get a route-scoped maintenance fragment:\n%s", safebuildFragment)
+	}
+	if !strings.Contains(site, "import "+filepath.Join(serverRoot, "_proxy", "routes", "bustora.lt")+"/*.caddy") {
+		t.Fatalf("shared site was not freshly composed from the route registry:\n%s", site)
+	}
+
+	if err := os.Remove(filepath.Join(safebuildApp, "maintenance.json")); err != nil {
+		t.Fatalf("remove maintenance state: %v", err)
+	}
+	run("3009", safebuild)
+	safebuildFragment = read(filepath.Join(routeDir, "999992-safebuild-000.caddy"))
+	if !strings.Contains(safebuildFragment, "reverse_proxy 127.0.0.1:3009") || strings.Contains(safebuildFragment, "root * ") {
+		t.Fatalf("disabling maintenance restored stale route state:\n%s", safebuildFragment)
+	}
+	if !strings.Contains(read(filepath.Join(routeDir, "999999-bustora-000.caddy")), "reverse_proxy 127.0.0.1:3010") {
+		t.Fatal("disabling maintenance dropped the sibling app route")
+	}
+}
