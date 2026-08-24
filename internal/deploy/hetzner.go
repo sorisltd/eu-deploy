@@ -41,6 +41,8 @@ type RemoteOptions struct {
 	AppContainerName    string
 	ProxyContainerName  string
 	InstallDependencies bool
+	BaseImage           string
+	HasNPMConfig        bool
 	RemoteHost          string
 	RemoteUser          string
 	RemotePort          int
@@ -431,6 +433,8 @@ func prepareHetznerBundle(opts RemoteOptions) (string, error) {
 		RuntimeStart:        opts.RuntimeStart,
 		ContainerPort:       opts.ContainerPort,
 		InstallDependencies: opts.InstallDependencies,
+		BaseImage:           opts.BaseImage,
+		HasNPMConfig:        opts.HasNPMConfig,
 		Packages:            opts.Packages,
 	}
 	if opts.PostDeploy != nil && len(opts.PostDeploy.Include) > 0 {
@@ -470,6 +474,12 @@ func prepareHetznerBundle(opts RemoteOptions) (string, error) {
 		if err := copyIfPresent(filepath.Join(opts.WorkDir, "package-lock.json"), filepath.Join(bundleDir, "package-lock.json")); err != nil {
 			os.RemoveAll(bundleDir)
 			return "", err
+		}
+		if opts.HasNPMConfig {
+			if err := copyIfPresent(filepath.Join(opts.WorkDir, ".npmrc"), filepath.Join(bundleDir, ".npmrc")); err != nil {
+				os.RemoveAll(bundleDir)
+				return "", err
+			}
 		}
 	}
 
@@ -600,6 +610,11 @@ func renderHetznerDeployScript(opts RemoteOptions) string {
 			fmt.Sprintf("if [ -f package.json ]; then cp package.json %s; fi", shellQuote(filepath.ToSlash(filepath.Join(releaseDir, "package.json")))),
 			fmt.Sprintf("if [ -f package-lock.json ]; then cp package-lock.json %s; fi", shellQuote(filepath.ToSlash(filepath.Join(releaseDir, "package-lock.json")))),
 		)
+		if opts.HasNPMConfig {
+			lines = append(lines,
+				fmt.Sprintf("if [ -f .npmrc ]; then cp .npmrc %s; fi", shellQuote(filepath.ToSlash(filepath.Join(releaseDir, ".npmrc")))),
+			)
+		}
 	}
 	if opts.PostDeploy != nil && len(opts.PostDeploy.Include) > 0 {
 		lines = append(lines,

@@ -71,3 +71,22 @@ func TestDockerfileContentsAddsPostDeployArchive(t *testing.T) {
 		t.Fatalf("dockerfile should add the post-deploy archive when configured:\n%s", dockerfile)
 	}
 }
+
+func TestDockerfileContentsUsesPinnedBaseImageAndNPMConfig(t *testing.T) {
+	opts := DockerOptions{
+		WorkDir:             "/tmp/project",
+		ArtifactPath:        "/tmp/project/.eudeploy/demo.tar.gz",
+		RuntimeStart:        "node server.js",
+		ContainerPort:       3000,
+		InstallDependencies: true,
+		BaseImage:           "node:22.22.0-bookworm-slim@sha256:abc",
+		HasNPMConfig:        true,
+	}
+	dockerfile := dockerfileContents(opts)
+	if !strings.Contains(dockerfile, "FROM node:22.22.0-bookworm-slim@sha256:abc") {
+		t.Fatalf("dockerfile should use the configured base image:\n%s", dockerfile)
+	}
+	if !strings.Contains(dockerfile, "COPY package*.json .npmrc ./") {
+		t.Fatalf("dockerfile should enforce the project npm config:\n%s", dockerfile)
+	}
+}

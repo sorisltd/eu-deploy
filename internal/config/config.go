@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -52,13 +53,61 @@ type HealthcheckSpec struct {
 }
 
 type RuntimeSpec struct {
-	Type        string          `yaml:"type"` // web|static|worker|cron
-	Start       string          `yaml:"start,omitempty"`
-	Output      string          `yaml:"output,omitempty"`
-	Port        int             `yaml:"port,omitempty"`
-	Healthcheck HealthcheckSpec `yaml:"healthcheck,omitempty"`
-	Packages    []string        `yaml:"packages,omitempty"`
-	Volumes     []string        `yaml:"volumes,omitempty"`
+	Type            string          `yaml:"type"` // web|static|worker|cron
+	Start           string          `yaml:"start,omitempty"`
+	Output          string          `yaml:"output,omitempty"`
+	Image           string          `yaml:"image,omitempty"`
+	NodeVersionFile string          `yaml:"node_version_file,omitempty"`
+	Port            int             `yaml:"port,omitempty"`
+	Healthcheck     HealthcheckSpec `yaml:"healthcheck,omitempty"`
+	Packages        []string        `yaml:"packages,omitempty"`
+	Volumes         []string        `yaml:"volumes,omitempty"`
+}
+
+var exactNodeVersionPattern = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+$`)
+
+// RuntimeNodeVersion reads the exact Node version shared by build and runtime
+// configuration. An empty node_version_file preserves the previous behavior.
+func RuntimeNodeVersion(cfg Config, workDir string) (string, error) {
+	versionFile := strings.TrimSpace(cfg.Runtime.NodeVersionFile)
+	if versionFile == "" {
+		return "", nil
+	}
+	if !filepath.IsAbs(versionFile) {
+		versionFile = filepath.Join(workDir, versionFile)
+	}
+	raw, err := os.ReadFile(versionFile)
+	if err != nil {
+		return "", fmt.Errorf("read runtime.node_version_file: %w", err)
+	}
+	version := strings.TrimSpace(string(raw))
+	if !exactNodeVersionPattern.MatchString(version) {
+		return "", fmt.Errorf("runtime.node_version_file must contain an exact Node version (for example 22.22.0)")
+	}
+	return version, nil
+}
+
+// RuntimeImage resolves NODE_VERSION in an explicitly configured runtime
+// image. The image remains empty when a project uses eu-deploy's default.
+func RuntimeImage(cfg Config, workDir string) (string, error) {
+	image := strings.TrimSpace(cfg.Runtime.Image)
+	if image == "" {
+		return "", nil
+	}
+	if strings.ContainsAny(image, "\r\n\t ") {
+		return "", fmt.Errorf("runtime.image must be a single Docker image reference")
+	}
+	version, err := RuntimeNodeVersion(cfg, workDir)
+	if err != nil {
+		return "", err
+	}
+	if strings.Contains(image, "${NODE_VERSION}") {
+		if version == "" {
+			return "", fmt.Errorf("runtime.image uses ${NODE_VERSION} but runtime.node_version_file is empty")
+		}
+		image = strings.ReplaceAll(image, "${NODE_VERSION}", version)
+	}
+	return image, nil
 }
 
 type RouteSpec struct {

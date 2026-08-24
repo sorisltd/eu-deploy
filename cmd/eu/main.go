@@ -942,6 +942,14 @@ func runDockerDeploy(cmd *cobra.Command, cfg config.Config, wd string) error {
 	if err != nil {
 		return err
 	}
+	baseImage, err := config.RuntimeImage(cfg, wd)
+	if err != nil {
+		return err
+	}
+	hasNPMConfig, err := projectHasNPMConfig(wd)
+	if err != nil {
+		return err
+	}
 
 	opts := deploy.DockerOptions{
 		WorkDir:             wd,
@@ -953,6 +961,8 @@ func runDockerDeploy(cmd *cobra.Command, cfg config.Config, wd string) error {
 		ContainerName:       containerName,
 		Detach:              detach,
 		InstallDependencies: installDependencies,
+		BaseImage:           baseImage,
+		HasNPMConfig:        hasNPMConfig,
 	}
 
 	if err := deploy.BuildDockerImage(opts); err != nil {
@@ -1181,6 +1191,14 @@ func buildRemoteOptions(cfg config.Config, wd string, target deploy.RemoteTarget
 	if err != nil {
 		return deploy.RemoteOptions{}, err
 	}
+	baseImage, err := config.RuntimeImage(cfg, wd)
+	if err != nil {
+		return deploy.RemoteOptions{}, err
+	}
+	hasNPMConfig, err := projectHasNPMConfig(wd)
+	if err != nil {
+		return deploy.RemoteOptions{}, err
+	}
 	opts := deploy.RemoteOptions{
 		Provider:           target,
 		ProjectName:        appIdentity,
@@ -1194,6 +1212,8 @@ func buildRemoteOptions(cfg config.Config, wd string, target deploy.RemoteTarget
 		ImageTag:           fmt.Sprintf("eu-deploy-%s:remote", safeProject),
 		AppContainerName:   fmt.Sprintf("eu-%s-app", safeProject),
 		ProxyContainerName: deploy.SharedProxyContainerName(),
+		BaseImage:          baseImage,
+		HasNPMConfig:       hasNPMConfig,
 		RemoteHost:         spec.Host,
 		RemoteUser:         spec.User,
 		RemotePort:         spec.Port,
@@ -1230,6 +1250,17 @@ func buildRemoteOptions(cfg config.Config, wd string, target deploy.RemoteTarget
 	}
 
 	return opts, nil
+}
+
+func projectHasNPMConfig(workDir string) (bool, error) {
+	_, err := os.Stat(filepath.Join(workDir, ".npmrc"))
+	if err == nil {
+		return true, nil
+	}
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	return false, fmt.Errorf("inspect .npmrc: %w", err)
 }
 
 func buildRemoteRoutes(workDir string, specs []config.RouteSpec) ([]deploy.RemoteRoute, error) {

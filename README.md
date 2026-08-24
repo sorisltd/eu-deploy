@@ -109,6 +109,28 @@ Repeat deploy to an existing VM:
 ./eu deploy --target hetzner
 ```
 
+### Pinned Node runtimes
+
+Projects can make one exact Node version drive both the local build check and
+the generated runtime image. Keep the version in a file that CI also reads,
+and pin the Docker image by digest:
+
+```yaml
+runtime:
+  type: web
+  start: node .output/server/index.mjs
+  node_version_file: .node-version
+  image: node:${NODE_VERSION}-bookworm-slim@sha256:<digest>
+  port: 3000
+```
+
+`node_version_file` must contain an exact three-part version such as
+`22.22.0`. `eu build` fails when the active local Node version differs, and
+eu-deploy substitutes that version into `runtime.image` before generating the
+Dockerfile. If the project has an `.npmrc`, it is copied into dependency-build
+contexts so settings such as `engine-strict=true` apply to the runtime image as
+well.
+
 Adding another website to the same Hetzner server:
 
 ```bash

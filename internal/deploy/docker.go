@@ -21,6 +21,8 @@ type DockerOptions struct {
 	ContainerName       string
 	Detach              bool
 	InstallDependencies bool
+	BaseImage           string
+	HasNPMConfig        bool
 	Packages            []string
 }
 
@@ -155,11 +157,11 @@ func dockerfileContents(opts DockerOptions) string {
 	postDeployRel = filepath.ToSlash(postDeployRel)
 
 	lines := []string{
-		"FROM node:20-slim",
+		"FROM " + dockerBaseImage(opts.BaseImage),
 		dockerfilePackagesStep(opts.Packages),
 		"WORKDIR /app",
 		"ENV NODE_ENV=production",
-		dockerfileInstallStep(opts.InstallDependencies),
+		dockerfileInstallStep(opts.InstallDependencies, opts.HasNPMConfig),
 		fmt.Sprintf("ADD %s /app/", artifactRel),
 	}
 	if strings.TrimSpace(postDeployRel) != "" {
@@ -180,12 +182,23 @@ func dockerfilePackagesStep(packages []string) string {
 	return fmt.Sprintf("RUN apt-get update -qq && apt-get install -y --no-install-recommends %s && rm -rf /var/lib/apt/lists/*", strings.Join(packages, " "))
 }
 
-func dockerfileInstallStep(installDependencies bool) string {
+func dockerBaseImage(image string) string {
+	if strings.TrimSpace(image) == "" {
+		return "node:20-slim"
+	}
+	return strings.TrimSpace(image)
+}
+
+func dockerfileInstallStep(installDependencies, hasNPMConfig bool) string {
 	if !installDependencies {
 		return ""
 	}
+	copyManifest := "COPY package*.json ./"
+	if hasNPMConfig {
+		copyManifest = "COPY package*.json .npmrc ./"
+	}
 	return strings.Join([]string{
-		"COPY package*.json ./",
+		copyManifest,
 		"RUN if [ -f package-lock.json ]; then npm ci --omit=dev; else npm install --omit=dev; fi",
 	}, "\n")
 }

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -75,6 +76,9 @@ func BuildProject(cfg config.Config, workDir string) (Result, error) {
 	if strings.TrimSpace(outputDir) == "" {
 		return Result{}, fmt.Errorf("build.output is empty in eudeploy.yaml")
 	}
+	if err := validateNodeVersion(cfg, workDir); err != nil {
+		return Result{}, err
+	}
 
 	inputHash, err := ComputeInputHash(cfg, workDir)
 	if err != nil {
@@ -143,4 +147,22 @@ func BuildProject(cfg config.Config, workDir string) (Result, error) {
 	}
 
 	return res, nil
+}
+
+func validateNodeVersion(cfg config.Config, workDir string) error {
+	expected, err := config.RuntimeNodeVersion(cfg, workDir)
+	if err != nil || expected == "" {
+		return err
+	}
+	cmd := exec.Command("node", "--version")
+	cmd.Dir = workDir
+	output, err := cmd.Output()
+	if err != nil {
+		return fmt.Errorf("check Node version: %w", err)
+	}
+	actual := strings.TrimPrefix(strings.TrimSpace(string(output)), "v")
+	if actual != expected {
+		return fmt.Errorf("Node version mismatch: runtime.node_version_file requires %s, current node is %s", expected, actual)
+	}
+	return nil
 }

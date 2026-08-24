@@ -1,6 +1,10 @@
 package config
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func TestValidateRoutesRedirectDefaultsAndHTTPS(t *testing.T) {
 	valid := []RouteSpec{{Hostnames: []string{"safebuild.lt", "www.safebuild.lt"}, Redirect: "https://bustora.lt/meistrams"}}
@@ -21,5 +25,38 @@ func TestValidateRoutesLegacyAndPreservePrefix(t *testing.T) {
 	}
 	if err := ValidateRoutes(routes); err != nil {
 		t.Fatalf("proxy routes rejected: %v", err)
+	}
+}
+
+func TestRuntimeImageResolvesNodeVersionFile(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".node-version"), []byte("22.22.0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Config{Runtime: RuntimeSpec{
+		Image:           "node:${NODE_VERSION}-bookworm-slim@sha256:abc",
+		NodeVersionFile: ".node-version",
+	}}
+	got, err := RuntimeImage(cfg, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "node:22.22.0-bookworm-slim@sha256:abc"
+	if got != want {
+		t.Fatalf("runtime image mismatch: got %q want %q", got, want)
+	}
+}
+
+func TestRuntimeImageRequiresExactNodeVersion(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".node-version"), []byte("22\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Config{Runtime: RuntimeSpec{
+		Image:           "node:${NODE_VERSION}-bookworm-slim@sha256:abc",
+		NodeVersionFile: ".node-version",
+	}}
+	if _, err := RuntimeImage(cfg, dir); err == nil {
+		t.Fatal("expected an inexact Node version to fail")
 	}
 }
