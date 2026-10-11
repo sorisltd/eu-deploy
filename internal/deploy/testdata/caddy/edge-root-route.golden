@@ -1,0 +1,18 @@
+handle {
+  request_body {
+    max_size 10MB
+  }
+  @eu_edge_probe path */.env */.env.* */.git/* */.aws/* */wp-admin* */wp-login.php */xmlrpc.php */phpmyadmin*
+  respond @eu_edge_probe 404
+  header {
+    ?Strict-Transport-Security "max-age=31536000"
+    ?X-Content-Type-Options "nosniff"
+    ?X-Frame-Options "SAMEORIGIN"
+    ?Referrer-Policy "strict-origin-when-cross-origin"
+    -Server
+    defer
+  }
+  @eu_edge_static path */_next/static/* */_build/assets/* */_nuxt/* */_app/immutable/* */_astro/*
+  header @eu_edge_static ?Cache-Control "public, max-age=31536000, immutable"
+  reverse_proxy 127.0.0.1:${TARGET_PORT}
+}

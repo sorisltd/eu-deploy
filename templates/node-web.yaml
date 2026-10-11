@@ -28,6 +28,12 @@ routes:
   - hostname: my-app.eu-deploy.dev
     path: /
     target: web
+# Optional: self-hosted hardening in the shared Caddy proxy. All off by default.
+# edge:
+#   security_headers: true
+#   cache_static: true
+#   block_probes: true
+#   max_body_size: 10MB
 previews:
   enabled: false
   hostname_template: pr-{{pr}}.my-app.eu-deploy.dev

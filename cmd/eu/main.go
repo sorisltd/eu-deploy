@@ -1174,6 +1174,9 @@ func buildRemoteOptions(cfg config.Config, wd string, target deploy.RemoteTarget
 	if err := config.ValidateRoutes(cfg.Routes); err != nil {
 		return deploy.RemoteOptions{}, err
 	}
+	if err := config.ValidateEdge(cfg.Edge); err != nil {
+		return deploy.RemoteOptions{}, err
+	}
 	spec, ok := resolveRemoteProviderSpec(cfg, target)
 	if !ok || spec == nil {
 		return deploy.RemoteOptions{}, fmt.Errorf("%s config is missing", target)
@@ -1191,6 +1194,7 @@ func buildRemoteOptions(cfg config.Config, wd string, target deploy.RemoteTarget
 	if err != nil {
 		return deploy.RemoteOptions{}, err
 	}
+	applyEdgeOptions(remoteRoutes, cfg.Edge)
 	baseImage, err := config.RuntimeImage(cfg, wd)
 	if err != nil {
 		return deploy.RemoteOptions{}, err
@@ -1288,6 +1292,25 @@ func buildRemoteRoutes(workDir string, specs []config.RouteSpec) ([]deploy.Remot
 		})
 	}
 	return routes, nil
+}
+
+// applyEdgeOptions copies the project's edge settings onto its proxy routes.
+// Redirect routes never reach the app, so they are left without edge rules.
+func applyEdgeOptions(routes []deploy.RemoteRoute, edge *config.EdgeSpec) {
+	if edge == nil {
+		return
+	}
+	options := deploy.EdgeOptions{
+		SecurityHeaders: edge.SecurityHeaders,
+		CacheStatic:     edge.CacheStatic,
+		BlockProbes:     edge.BlockProbes,
+		MaxBodySize:     strings.TrimSpace(edge.MaxBodySize),
+	}
+	for index := range routes {
+		if routes[index].Redirect == "" {
+			routes[index].Edge = options
+		}
+	}
 }
 
 func loadConfigFromWorkingDir() (config.Config, string, string, error) {

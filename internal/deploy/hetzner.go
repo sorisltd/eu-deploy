@@ -71,6 +71,7 @@ type RemoteRoute struct {
 	Redirect       string
 	Code           int
 	CaddyExtra     string
+	Edge           EdgeOptions
 }
 
 type HetznerOptions = RemoteOptions

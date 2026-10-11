@@ -296,6 +296,27 @@ For reviewed directives that do not fit the route schema, `caddy_extra_file` rea
 
 Shared-host route composition applies to web deploy, rollback, destroy, and maintenance mode. Maintenance is route-scoped: pausing a path app replaces only that app's fragment, while sibling paths and the root app remain live. Pausing the root app replaces only its catch-all fragment, so more-specific path apps remain live. The root/last route owns the hostname's Caddy access log, so path-module traffic is currently attributed to that shared host log rather than a separate module log.
 
+### Edge hardening (optional)
+
+An `edge` section adds self-hosted request hardening to the shared Caddy proxy for this project's proxy routes. It needs no external provider or API key. Every setting is off by default, and a config without `edge` renders exactly the same proxy config as before, so existing sites are unaffected until you opt in.
+
+```yaml
+edge:
+  security_headers: true   # HSTS, nosniff, X-Frame-Options, Referrer-Policy; removes Server
+  cache_static: true       # 1-year caching for content-hashed framework build assets
+  block_probes: true       # 404 for scanner paths such as /.env, /.git/, /wp-admin
+  max_body_size: 10MB      # refuse larger request bodies with 413 (KB, MB or GB)
+```
+
+- `security_headers` sets `Strict-Transport-Security: max-age=31536000`, `X-Content-Type-Options: nosniff`, `X-Frame-Options: SAMEORIGIN` and `Referrer-Policy: strict-origin-when-cross-origin`, and removes the `Server` header. A header the app sets itself always wins. HSTS tells browsers to use HTTPS for this hostname for a year, so enable it only for hostnames that will stay on HTTPS.
+- `cache_static` applies `Cache-Control: public, max-age=31536000, immutable` to content-hashed build paths only: `/_next/static/`, `/_build/assets/`, `/_nuxt/`, `/_app/immutable/` and `/_astro/`. Generic folders such as `/assets/` are not touched because they can hold unhashed files. This is browser and CDN caching; Caddy does not cache responses itself. A `Cache-Control` the app sets itself wins.
+- `block_probes` answers `/.env`, `/.env.*`, `/.git/`, `/.aws/`, `/wp-admin`, `/wp-login.php`, `/xmlrpc.php` and `/phpmyadmin` with 404 under any route prefix, before the request reaches the app.
+- `max_body_size` rejects request bodies above the limit with 413. Leave it empty for no limit; set it above your largest legitimate upload.
+
+Edge settings apply to the project's own proxy routes. Redirect routes, `caddy_extra_file` handlers and maintenance pages are rendered without them. Projects sharing one hostname each carry their own settings on their own paths. App containers are already published on `127.0.0.1` only, so traffic can reach them only through the proxy.
+
+Rate limiting is not included: the shared proxy runs the stock `caddy:2` image, which has no rate-limit module.
+
 ## Forgejo Actions
 
 For a Vercel-style flow, use:

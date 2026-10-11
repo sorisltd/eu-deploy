@@ -194,9 +194,19 @@ func renderManagedRouteFragment(route RemoteRoute, upstream string) string {
 		}
 		return fmt.Sprintf("redir %s %d\n", route.Redirect, code)
 	}
-	return strings.Join(renderCaddyRoute(CaddyRoute{
+	lines := renderCaddyRoute(CaddyRoute{
 		Path:           route.Path,
 		Upstream:       upstream,
 		PreservePrefix: route.PreservePrefix,
-	}, ""), "\n") + "\n"
+	}, "")
+	if edge := renderEdgeDirectives(route.Edge, "  "); len(edge) > 0 {
+		// renderCaddyRoute returns "<open> {", "  reverse_proxy ...", "}".
+		// Edge directives go inside the block, ahead of reverse_proxy.
+		withEdge := make([]string, 0, len(lines)+len(edge))
+		withEdge = append(withEdge, lines[0])
+		withEdge = append(withEdge, edge...)
+		withEdge = append(withEdge, lines[1:]...)
+		lines = withEdge
+	}
+	return strings.Join(lines, "\n") + "\n"
 }
