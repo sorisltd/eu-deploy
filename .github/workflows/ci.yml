@@ -1,0 +1,63 @@
+# Runs vet and the full test suite on every pull request and on main, so a
+# PR shows a green or red check before it is merged and synced to Forgejo.
+#
+# The edge proxy tests run against a real Caddy binary (EU_CADDY_BIN).
+# This repo has no .forgejo/workflows folder, so Forgejo would also read
+# this file; the job-level `if` keeps it on GitHub only.
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    if: github.server_url == 'https://github.com'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CADDY_VERSION: 2.10.2
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install Caddy for proxy tests
+        run: |
+          mkdir -p "$RUNNER_TEMP/caddy"
+          curl -fsSL -o "$RUNNER_TEMP/caddy/caddy.tar.gz" \
+            "https://github.com/caddyserver/caddy/releases/download/v${CADDY_VERSION}/caddy_${CADDY_VERSION}_linux_amd64.tar.gz"
+          tar -xzf "$RUNNER_TEMP/caddy/caddy.tar.gz" -C "$RUNNER_TEMP/caddy" caddy
+          "$RUNNER_TEMP/caddy/caddy" version
+          echo "EU_CADDY_BIN=$RUNNER_TEMP/caddy/caddy" >> "$GITHUB_ENV"
+
+      - name: Check formatting
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt needed on: $unformatted"
+            exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./...
+
+      - name: Build
+        run: go build -o /dev/null ./cmd/eu
