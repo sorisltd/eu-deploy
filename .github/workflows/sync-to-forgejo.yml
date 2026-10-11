@@ -1,0 +1,57 @@
+# Pushes every commit that lands on GitHub `main` to the Forgejo copy of this
+# repository, so changes merged on GitHub reach Forgejo (and its Actions).
+#
+# Required GitHub repository secrets:
+#   FORGEJO_REPO_URL  HTTPS clone URL of the Forgejo repo,
+#                     e.g. https://git.nestora-homes.com/owner/eu-deploy.git
+#   FORGEJO_TOKEN     Forgejo access token with write access to that repo only
+#
+# Safety:
+#   - Plain push, never --force. If Forgejo `main` has commits GitHub does not,
+#     the push is rejected and this job fails instead of overwriting them.
+#   - This repo has no .forgejo/workflows folder, so Forgejo would also read
+#     this file. The job-level `if` skips it anywhere but github.com, so it
+#     never sits queued on a Forgejo runner.
+
+name: Sync to Forgejo
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: sync-to-forgejo
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: github.server_url == 'https://github.com'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check secrets
+        env:
+          FORGEJO_REPO_URL: ${{ secrets.FORGEJO_REPO_URL }}
+          FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
+        run: |
+          if [ -z "$FORGEJO_REPO_URL" ] || [ -z "$FORGEJO_TOKEN" ]; then
+            echo "::error::Set the FORGEJO_REPO_URL and FORGEJO_TOKEN repository secrets."
+            exit 1
+          fi
+
+      - name: Checkout full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Push main to Forgejo
+        env:
+          FORGEJO_REPO_URL: ${{ secrets.FORGEJO_REPO_URL }}
+          FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
+        run: |
+          AUTH=$(printf 'sync:%s' "$FORGEJO_TOKEN" | base64 -w0)
+          echo "::add-mask::$AUTH"
+          git -c http.extraHeader="Authorization: Basic $AUTH" \
+            push "$FORGEJO_REPO_URL" "HEAD:refs/heads/main"
