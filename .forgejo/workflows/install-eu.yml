@@ -1,0 +1,148 @@
+# Builds the eu CLI from this repo and installs it on the Forgejo host,
+# replacing both copies that are in use today:
+#   /usr/local/bin/eu                    used by the dashboard container
+#   /opt/forgejo-runner-masazo/bin/eu    mounted into every deploy job
+#
+# Manual on purpose: replacing eu changes how every site deploys.
+# Run it from Forgejo: Actions -> "Install eu" -> Run workflow.
+#   action=install   build the chosen ref, test it, install it (type install to confirm)
+#   action=rollback  put back the binaries that were there before the last install
+#
+# Safety: tests must pass, the new binary must run before anything is
+# replaced, each binary is swapped with an atomic rename, and the previous
+# one is kept next to it as <path>.prev.
+#
+# The dashboard container mounts /usr/local/bin/eu as a single file, so it
+# keeps using the old binary until the dashboard is redeployed or restarted.
+# Deploy jobs start a fresh container each time and get the new one at once.
+
+name: Install eu
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: install or rollback
+        type: string
+        required: true
+        default: install
+      ref:
+        description: Git ref to build (install only)
+        type: string
+        required: true
+        default: main
+      confirm:
+        description: Type the action again (install or rollback) to confirm
+        type: string
+        required: true
+        default: ""
+
+concurrency:
+  group: eu-install
+  cancel-in-progress: false
+
+env:
+  GO_VERSION: 1.24.7
+  INSTALL_HOST: 135.181.96.215
+  INSTALL_USER: root
+  INSTALL_TARGETS: /usr/local/bin/eu /opt/forgejo-runner-masazo/bin/eu
+  INSTALL_RECORD: /opt/eu-deploy/.eu-installed
+
+jobs:
+  install:
+    runs-on: eu-deploy
+    timeout-minutes: 30
+    steps:
+      - name: Confirm
+        run: |
+          case "${{ inputs.action }}" in
+            install|rollback) ;;
+            *) echo "action must be install or rollback"; exit 1 ;;
+          esac
+          test "${{ inputs.confirm }}" = "${{ inputs.action }}" || {
+            echo "Refusing: type '${{ inputs.action }}' in the confirm field to run it."
+            exit 1
+          }
+
+      - name: Checkout
+        if: inputs.action == 'install'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Install Go
+        if: inputs.action == 'install'
+        run: |
+          curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" -o /tmp/go.tgz
+          rm -rf /tmp/go && mkdir -p /tmp/go && tar -xzf /tmp/go.tgz -C /tmp
+          echo "/tmp/go/bin" >> "$GITHUB_PATH"
+
+      - name: Test
+        if: inputs.action == 'install'
+        run: |
+          go version
+          go vet ./...
+          go test ./...
+
+      - name: Build
+        if: inputs.action == 'install'
+        run: |
+          CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o eu-build ./cmd/eu
+          ./eu-build --help | head -1
+          ./eu-build --help | grep -q "eu-deploy" || { echo "built binary does not look like eu"; exit 1; }
+          git rev-parse --short=12 HEAD > eu-build.sha
+
+      - name: Set up SSH
+        run: |
+          key="${EUDEPLOY_HETZNER_SSH_KEY_PATH:-}"
+          ssh_opts="-o StrictHostKeyChecking=accept-new -o BatchMode=yes"
+          if [ -n "$key" ]; then ssh_opts="$ssh_opts -i $key"; fi
+          echo "SSH_OPTS=$ssh_opts" >> "$GITHUB_ENV"
+          ssh $ssh_opts "$INSTALL_USER@$INSTALL_HOST" true
+          echo "SSH to $INSTALL_HOST works"
+
+      - name: Install on host
+        if: inputs.action == 'install'
+        run: |
+          sha="$(cat eu-build.sha)"
+          staged="/tmp/eu-install-$sha"
+          scp $SSH_OPTS eu-build "$INSTALL_USER@$INSTALL_HOST:$staged"
+          ssh $SSH_OPTS "$INSTALL_USER@$INSTALL_HOST" \
+            "STAGED='$staged' SHA='$sha' TARGETS='$INSTALL_TARGETS' RECORD='$INSTALL_RECORD' bash -s" <<'REMOTE'
+          set -euo pipefail
+          chmod 0755 "$STAGED"
+          "$STAGED" --help >/dev/null
+          for target in $TARGETS; do
+            dir="$(dirname "$target")"
+            [ -d "$dir" ] || { echo "missing directory $dir"; exit 1; }
+            if [ -e "$target" ]; then cp -pL "$target" "$target.prev"; fi
+            cp "$STAGED" "$target.new"
+            chmod 0755 "$target.new"
+            mv -f "$target.new" "$target"
+            "$target" --help >/dev/null
+            echo "installed $target ($SHA)"
+          done
+          mkdir -p "$(dirname "$RECORD")"
+          printf '%s %s\n' "$SHA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$RECORD"
+          rm -f "$STAGED"
+          REMOTE
+          echo "Done. Deploy jobs use the new eu now; the dashboard picks it up on its next deploy or restart."
+
+      - name: Roll back on host
+        if: inputs.action == 'rollback'
+        run: |
+          ssh $SSH_OPTS "$INSTALL_USER@$INSTALL_HOST" \
+            "TARGETS='$INSTALL_TARGETS' RECORD='$INSTALL_RECORD' bash -s" <<'REMOTE'
+          set -euo pipefail
+          for target in $TARGETS; do
+            [ -e "$target.prev" ] || { echo "no $target.prev to roll back to"; exit 1; }
+          done
+          for target in $TARGETS; do
+            cp -p "$target.prev" "$target.new"
+            mv -f "$target.new" "$target"
+            "$target" --help >/dev/null
+            echo "restored $target from $target.prev"
+          done
+          printf 'rollback %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$RECORD"
+          REMOTE
+          echo "Rolled back. The dashboard picks it up on its next deploy or restart."
