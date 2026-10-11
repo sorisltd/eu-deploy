@@ -1,0 +1,13 @@
+handle /darbai* {
+  @eu_edge_probe path */.env */.env.* */.git/* */.aws/* */wp-admin* */wp-login.php */xmlrpc.php */phpmyadmin*
+  respond @eu_edge_probe 404
+  header {
+    ?Strict-Transport-Security "max-age=31536000"
+    ?X-Content-Type-Options "nosniff"
+    ?X-Frame-Options "SAMEORIGIN"
+    ?Referrer-Policy "strict-origin-when-cross-origin"
+    -Server
+    defer
+  }
+  reverse_proxy 127.0.0.1:${TARGET_PORT}
+}

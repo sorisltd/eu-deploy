@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/sorisltd/eu-deploy/internal/config"
+	"github.com/sorisltd/eu-deploy/internal/deploy"
 )
 
 func TestBuildRemoteRoutesLoadsExtraAndDefaultsRedirect(t *testing.T) {
@@ -27,5 +28,23 @@ func TestBuildRemoteRoutesLoadsExtraAndDefaultsRedirect(t *testing.T) {
 	}
 	if routes[1].Code != 301 || len(routes[1].Hostnames) != 2 {
 		t.Fatalf("unexpected redirect route: %#v", routes[1])
+	}
+}
+
+func TestApplyEdgeOptionsSkipsRedirectsAndNil(t *testing.T) {
+	routes := []deploy.RemoteRoute{
+		{Hostnames: []string{"bustora.lt"}, Path: "/"},
+		{Hostnames: []string{"safebuild.lt"}, Redirect: "https://bustora.lt/meistrams", Code: 301},
+	}
+	applyEdgeOptions(routes, nil)
+	if routes[0].Edge.Enabled() || routes[1].Edge.Enabled() {
+		t.Fatalf("nil edge must leave routes untouched: %#v", routes)
+	}
+	applyEdgeOptions(routes, &config.EdgeSpec{SecurityHeaders: true, MaxBodySize: " 10MB "})
+	if !routes[0].Edge.SecurityHeaders || routes[0].Edge.MaxBodySize != "10MB" {
+		t.Fatalf("proxy route should get edge options: %#v", routes[0].Edge)
+	}
+	if routes[1].Edge.Enabled() {
+		t.Fatalf("redirect route must not get edge options: %#v", routes[1].Edge)
 	}
 }

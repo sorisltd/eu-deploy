@@ -18,6 +18,7 @@ type Config struct {
 	Deploy   DeploySpec    `yaml:"deploy,omitempty"`
 	Runtime  RuntimeSpec   `yaml:"runtime"`
 	Routes   []RouteSpec   `yaml:"routes"`
+	Edge     *EdgeSpec     `yaml:"edge,omitempty"`
 	Env      EnvSpec       `yaml:"env,omitempty"`
 	Previews PreviewSpec   `yaml:"previews,omitempty"`
 	Database *DatabaseSpec `yaml:"database,omitempty"`
@@ -163,6 +164,36 @@ func ValidateRoutes(routes []RouteSpec) error {
 		if route.Code != 0 && route.Code != 301 && route.Code != 302 && route.Code != 307 && route.Code != 308 {
 			return fmt.Errorf("routes[%d].code must be 301, 302, 307, or 308", index)
 		}
+	}
+	return nil
+}
+
+// EdgeSpec turns on self-hosted request hardening in the shared Caddy proxy
+// for this project's proxy routes. Every field is off by default, and an
+// absent edge section renders exactly the same proxy config as before.
+type EdgeSpec struct {
+	// SecurityHeaders adds HSTS, nosniff, frame and referrer headers and
+	// removes the Server header. Headers the app sets itself are kept.
+	SecurityHeaders bool `yaml:"security_headers,omitempty"`
+	// CacheStatic marks content-hashed framework build assets as cacheable
+	// for a year (browser and CDN caching, not a server-side cache).
+	CacheStatic bool `yaml:"cache_static,omitempty"`
+	// BlockProbes answers common exploit-scanner paths (/.env, /.git/,
+	// /wp-admin, ...) with 404 before they reach the app.
+	BlockProbes bool `yaml:"block_probes,omitempty"`
+	// MaxBodySize caps request bodies, e.g. "10MB". Empty means no cap.
+	MaxBodySize string `yaml:"max_body_size,omitempty"`
+}
+
+var bodySizePattern = regexp.MustCompile(`^[1-9][0-9]*(KB|MB|GB)$`)
+
+// ValidateEdge checks the edge section. A nil section is valid.
+func ValidateEdge(edge *EdgeSpec) error {
+	if edge == nil {
+		return nil
+	}
+	if size := strings.TrimSpace(edge.MaxBodySize); size != "" && !bodySizePattern.MatchString(size) {
+		return fmt.Errorf("edge.max_body_size must be a whole number with KB, MB, or GB (for example 10MB)")
 	}
 	return nil
 }

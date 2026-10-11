@@ -60,3 +60,55 @@ func TestRuntimeImageRequiresExactNodeVersion(t *testing.T) {
 		t.Fatal("expected an inexact Node version to fail")
 	}
 }
+
+func TestValidateEdge(t *testing.T) {
+	valid := []*EdgeSpec{
+		nil,
+		{},
+		{SecurityHeaders: true, CacheStatic: true, BlockProbes: true},
+		{MaxBodySize: "10MB"},
+		{MaxBodySize: "512KB"},
+		{MaxBodySize: "1GB"},
+	}
+	for _, edge := range valid {
+		if err := ValidateEdge(edge); err != nil {
+			t.Fatalf("ValidateEdge(%#v) = %v, want nil", edge, err)
+		}
+	}
+	invalid := []string{"10", "10mb", "0MB", "10 MB", "1.5MB", "10TB", "-1MB"}
+	for _, size := range invalid {
+		if err := ValidateEdge(&EdgeSpec{MaxBodySize: size}); err == nil {
+			t.Fatalf("ValidateEdge(max_body_size=%q) = nil, want error", size)
+		}
+	}
+}
+
+func TestReadYAMLWithoutEdgeLeavesEdgeNil(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "eudeploy.yaml")
+	if err := os.WriteFile(path, []byte("version: 1\nproject:\n  name: demo\n"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := ReadYAML(path)
+	if err != nil {
+		t.Fatalf("ReadYAML: %v", err)
+	}
+	if cfg.Edge != nil {
+		t.Fatalf("absent edge section must stay nil, got %#v", cfg.Edge)
+	}
+}
+
+func TestReadYAMLParsesEdge(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "eudeploy.yaml")
+	body := "version: 1\nedge:\n  security_headers: true\n  cache_static: true\n  block_probes: true\n  max_body_size: 25MB\n"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := ReadYAML(path)
+	if err != nil {
+		t.Fatalf("ReadYAML: %v", err)
+	}
+	want := EdgeSpec{SecurityHeaders: true, CacheStatic: true, BlockProbes: true, MaxBodySize: "25MB"}
+	if cfg.Edge == nil || *cfg.Edge != want {
+		t.Fatalf("edge = %#v, want %#v", cfg.Edge, want)
+	}
+}
