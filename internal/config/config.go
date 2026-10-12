@@ -183,6 +183,24 @@ type EdgeSpec struct {
 	BlockProbes bool `yaml:"block_probes,omitempty"`
 	// MaxBodySize caps request bodies, e.g. "10MB". Empty means no cap.
 	MaxBodySize string `yaml:"max_body_size,omitempty"`
+	// DNS and CDN name optional external providers (see internal/providers).
+	// Absent or "none" means the provider is not used.
+	DNS *EdgeProviderSpec `yaml:"dns,omitempty"`
+	CDN *EdgeProviderSpec `yaml:"cdn,omitempty"`
+}
+
+// EdgeProviderSpec selects an external provider. Credentials are never set
+// here; the provider reads them from the deploy runner's environment.
+type EdgeProviderSpec struct {
+	Provider string `yaml:"provider,omitempty"`
+}
+
+// EdgeProviderName returns the configured provider name, "" when unset.
+func EdgeProviderName(spec *EdgeProviderSpec) string {
+	if spec == nil {
+		return ""
+	}
+	return strings.TrimSpace(spec.Provider)
 }
 
 var bodySizePattern = regexp.MustCompile(`^[1-9][0-9]*(KB|MB|GB)$`)

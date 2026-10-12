@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -16,6 +17,7 @@ import (
 	"github.com/sorisltd/eu-deploy/internal/config"
 	"github.com/sorisltd/eu-deploy/internal/deploy"
 	"github.com/sorisltd/eu-deploy/internal/detect"
+	"github.com/sorisltd/eu-deploy/internal/providers"
 )
 
 func main() {
@@ -1057,6 +1059,13 @@ func runRemoteDeploy(cmd *cobra.Command, cfg config.Config, wd string, target de
 	opts.InstallDependencies = installDependencies
 	opts.Env = prepared.EnvValues
 
+	// Resolve external edge providers before touching the server, so a
+	// missing credential stops the deploy instead of failing half way.
+	dnsProvider, cdnProvider, err := resolveEdgeProviders(cfg.Edge, providers.EnvLookup)
+	if err != nil {
+		return err
+	}
+
 	if !jsonMode {
 		fmt.Printf("Uploading release to %s@%s...\n", opts.RemoteUser, opts.RemoteHost)
 	}
@@ -1074,6 +1083,22 @@ func runRemoteDeploy(cmd *cobra.Command, cfg config.Config, wd string, target de
 			return newJSONCommandError(cmd, string(target), err, failedPhaseData(phases, currentPhase))
 		}
 		return err
+	}
+
+	if err := providers.Apply(context.Background(), dnsProvider, cdnProvider, resolveRouteHostnames(cfg), opts.RemoteHost); err != nil {
+		err = fmt.Errorf("release %s is live, but the edge provider step failed: %w", opts.ReleaseID, err)
+		if jsonMode {
+			return newJSONCommandError(cmd, string(target), err, failedPhaseData(phases, currentPhase))
+		}
+		return err
+	}
+	if !jsonMode {
+		if dnsProvider != nil {
+			fmt.Printf("OK DNS records ensured via %s\n", dnsProvider.Name())
+		}
+		if cdnProvider != nil {
+			fmt.Printf("OK CDN configured via %s\n", cdnProvider.Name())
+		}
 	}
 
 	if jsonMode {
@@ -1175,6 +1200,9 @@ func buildRemoteOptions(cfg config.Config, wd string, target deploy.RemoteTarget
 		return deploy.RemoteOptions{}, err
 	}
 	if err := config.ValidateEdge(cfg.Edge); err != nil {
+		return deploy.RemoteOptions{}, err
+	}
+	if err := validateEdgeProviderNames(cfg.Edge); err != nil {
 		return deploy.RemoteOptions{}, err
 	}
 	spec, ok := resolveRemoteProviderSpec(cfg, target)
@@ -1292,6 +1320,35 @@ func buildRemoteRoutes(workDir string, specs []config.RouteSpec) ([]deploy.Remot
 		})
 	}
 	return routes, nil
+}
+
+// validateEdgeProviderNames rejects unknown provider names without needing
+// credentials, so preflight and every remote command catch typos early.
+func validateEdgeProviderNames(edge *config.EdgeSpec) error {
+	if edge == nil {
+		return nil
+	}
+	if err := providers.ValidateName("dns", config.EdgeProviderName(edge.DNS)); err != nil {
+		return err
+	}
+	return providers.ValidateName("cdn", config.EdgeProviderName(edge.CDN))
+}
+
+// resolveEdgeProviders builds the configured providers. Both are nil when
+// none is configured, which leaves deploys exactly as they were.
+func resolveEdgeProviders(edge *config.EdgeSpec, lookup providers.Lookup) (providers.DNSProvider, providers.CDNProvider, error) {
+	if edge == nil {
+		return nil, nil, nil
+	}
+	dnsProvider, err := providers.ResolveDNS(config.EdgeProviderName(edge.DNS), lookup)
+	if err != nil {
+		return nil, nil, err
+	}
+	cdnProvider, err := providers.ResolveCDN(config.EdgeProviderName(edge.CDN), lookup)
+	if err != nil {
+		return nil, nil, err
+	}
+	return dnsProvider, cdnProvider, nil
 }
 
 // applyEdgeOptions copies the project's edge settings onto its proxy routes.
