@@ -8,6 +8,8 @@
 # Run it from Forgejo: Actions -> "Install eu" -> Run workflow.
 #   action=install   build the chosen ref, test it, install it (type install to confirm)
 #   action=rollback  put back the binaries that were there before the last install
+#   action=analytics install the analytics worker, schema and cron jobs on
+#                    analytics_host (built from the chosen ref). Safe to rerun.
 #
 # Safety: tests must pass, the new binary must run before anything is
 # replaced, each binary is swapped with an atomic rename, and the previous
@@ -23,17 +25,22 @@ on:
   workflow_dispatch:
     inputs:
       action:
-        description: install or rollback
+        description: install, rollback or analytics
         type: string
         required: true
         default: install
+      analytics_host:
+        description: Server for action=analytics
+        type: string
+        required: false
+        default: 135.181.96.215
       ref:
-        description: Git ref to build (install only)
+        description: Git ref to build (install and analytics)
         type: string
         required: true
         default: main
       confirm:
-        description: Type the action again (install or rollback) to confirm
+        description: Type the action again to confirm
         type: string
         required: true
         default: ""
@@ -57,8 +64,8 @@ jobs:
       - name: Confirm
         run: |
           case "${{ inputs.action }}" in
-            install|rollback) ;;
-            *) echo "action must be install or rollback"; exit 1 ;;
+            install|rollback|analytics) ;;
+            *) echo "action must be install, rollback or analytics"; exit 1 ;;
           esac
           test "${{ inputs.confirm }}" = "${{ inputs.action }}" || {
             echo "Refusing: type '${{ inputs.action }}' in the confirm field to run it."
@@ -66,13 +73,13 @@ jobs:
           }
 
       - name: Checkout
-        if: inputs.action == 'install'
+        if: inputs.action == 'install' || inputs.action == 'analytics'
         uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref }}
 
       - name: Install Go
-        if: inputs.action == 'install'
+        if: inputs.action == 'install' || inputs.action == 'analytics'
         run: |
           curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" -o /tmp/go.tgz
           rm -rf /tmp/go && mkdir -p /tmp/go && tar -xzf /tmp/go.tgz -C /tmp
@@ -86,7 +93,7 @@ jobs:
           go test ./...
 
       - name: Build
-        if: inputs.action == 'install'
+        if: inputs.action == 'install' || inputs.action == 'analytics'
         run: |
           CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o eu-build ./cmd/eu
           # Capture the help text once: piping straight into head or grep -q
@@ -157,3 +164,26 @@ jobs:
           printf 'rollback %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$RECORD"
           REMOTE
           echo "Rolled back. The dashboard picks it up on its next deploy or restart."
+
+      - name: Install analytics
+        if: inputs.action == 'analytics'
+        run: |
+          host="${{ inputs.analytics_host }}"
+          case "$host" in
+            ''|*[!0-9a-zA-Z.-]*) echo "analytics_host must be a plain hostname or IP"; exit 1 ;;
+          esac
+          ssh $SSH_OPTS "$INSTALL_USER@$host" true
+          work="$(mktemp -d)"
+          printf 'version: 1\nproject:\n  name: analytics-install\nhetzner:\n  host: %s\n  user: %s\n  port: 22\n  server_path: /opt/eu-deploy\n' \
+            "$host" "$INSTALL_USER" > "$work/eudeploy.yaml"
+          # The runner's job env points at the apps server by default and
+          # overrides eudeploy.yaml, so pin the target explicitly.
+          export EUDEPLOY_HETZNER_HOST="$host"
+          export EUDEPLOY_HETZNER_USER="$INSTALL_USER"
+          export EUDEPLOY_HETZNER_PORT=22
+          export EUDEPLOY_HETZNER_SERVER_PATH=/opt/eu-deploy
+          export EU_DEPLOY_SOURCE_DIR="$GITHUB_WORKSPACE"
+          cp eu-build "$work/eu"
+          cd "$work"
+          ./eu analytics install --target hetzner --no-prompt
+          echo "Analytics installed on $host. First data appears within 5 minutes; daily totals after 00:05 UTC."
