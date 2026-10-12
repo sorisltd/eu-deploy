@@ -341,7 +341,7 @@ The runner can inject non-interactive deploy values from environment variables s
 
 ### Installing eu on the Forgejo host
 
-`.forgejo/workflows/install-eu.yml` builds `eu` from this repo and installs it on the Forgejo host, replacing both copies in use: `/usr/local/bin/eu` (mounted into the dashboard container) and `/opt/forgejo-runner-masazo/bin/eu` (mounted into every deploy job). It is manual on purpose: in Forgejo open Actions, choose "Install eu", and run it with `action=install` and `confirm=install`.
+`.forgejo/workflows/install-eu.yml` builds `eu` from this repo and installs it on the Forgejo host, replacing every copy in use: `/usr/local/bin/eu` (mounted into the dashboard container), `/opt/forgejo-runner-masazo/bin/eu` (mounted into eu-deploy and masazo deploy jobs) and `/opt/forgejo-runner-dawn/bin/eu` (mounted into dawn-within-yoga deploy jobs). It is manual on purpose: in Forgejo open Actions, choose "Install eu", and run it with `action=install` and `confirm=install`.
 
 Tests must pass and the new binary must run before anything is replaced. Each binary is swapped with an atomic rename and the previous one is kept as `<path>.prev`; run the workflow with `action=rollback` and `confirm=rollback` to restore them. The installed commit is recorded in `/opt/eu-deploy/.eu-installed`. Deploy jobs get the new binary immediately; the dashboard keeps the old one until it is redeployed or restarted, because it mounts the file directly.
 

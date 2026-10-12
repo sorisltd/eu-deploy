@@ -1,7 +1,8 @@
 # Builds the eu CLI from this repo and installs it on the Forgejo host,
-# replacing both copies that are in use today:
+# replacing every copy that is in use today:
 #   /usr/local/bin/eu                    used by the dashboard container
-#   /opt/forgejo-runner-masazo/bin/eu    mounted into every deploy job
+#   /opt/forgejo-runner-masazo/bin/eu    mounted into eu-deploy and masazo deploy jobs
+#   /opt/forgejo-runner-dawn/bin/eu      mounted into dawn-within-yoga deploy jobs
 #
 # Manual on purpose: replacing eu changes how every site deploys.
 # Run it from Forgejo: Actions -> "Install eu" -> Run workflow.
@@ -45,7 +46,7 @@ env:
   GO_VERSION: 1.24.7
   INSTALL_HOST: 135.181.96.215
   INSTALL_USER: root
-  INSTALL_TARGETS: /usr/local/bin/eu /opt/forgejo-runner-masazo/bin/eu
+  INSTALL_TARGETS: /usr/local/bin/eu /opt/forgejo-runner-masazo/bin/eu /opt/forgejo-runner-dawn/bin/eu
   INSTALL_RECORD: /opt/eu-deploy/.eu-installed
 
 jobs:
@@ -134,15 +135,19 @@ jobs:
           ssh $SSH_OPTS "$INSTALL_USER@$INSTALL_HOST" \
             "TARGETS='$INSTALL_TARGETS' RECORD='$INSTALL_RECORD' bash -s" <<'REMOTE'
           set -euo pipefail
+          restored=0
           for target in $TARGETS; do
-            [ -e "$target.prev" ] || { echo "no $target.prev to roll back to"; exit 1; }
-          done
-          for target in $TARGETS; do
+            if [ ! -e "$target.prev" ]; then
+              echo "skipping $target: no $target.prev"
+              continue
+            fi
             cp -p "$target.prev" "$target.new"
             mv -f "$target.new" "$target"
             "$target" --help >/dev/null
             echo "restored $target from $target.prev"
+            restored=$((restored + 1))
           done
+          [ "$restored" -gt 0 ] || { echo "nothing to roll back"; exit 1; }
           printf 'rollback %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$RECORD"
           REMOTE
           echo "Rolled back. The dashboard picks it up on its next deploy or restart."
