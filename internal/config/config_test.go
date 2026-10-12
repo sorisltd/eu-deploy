@@ -112,3 +112,24 @@ func TestReadYAMLParsesEdge(t *testing.T) {
 		t.Fatalf("edge = %#v, want %#v", cfg.Edge, want)
 	}
 }
+
+func TestReadYAMLParsesEdgeProviders(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "eudeploy.yaml")
+	body := "version: 1\nedge:\n  security_headers: true\n  dns:\n    provider: none\n  cdn:\n    provider: bunny\n"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := ReadYAML(path)
+	if err != nil {
+		t.Fatalf("ReadYAML: %v", err)
+	}
+	if got := EdgeProviderName(cfg.Edge.DNS); got != "none" {
+		t.Fatalf("dns provider = %q", got)
+	}
+	if got := EdgeProviderName(cfg.Edge.CDN); got != "bunny" {
+		t.Fatalf("cdn provider = %q", got)
+	}
+	if got := EdgeProviderName(nil); got != "" {
+		t.Fatalf("nil spec = %q", got)
+	}
+}

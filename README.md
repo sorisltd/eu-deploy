@@ -317,6 +317,23 @@ Edge settings apply to the project's own proxy routes. Redirect routes, `caddy_e
 
 Rate limiting is not included: the shared proxy runs the stock `caddy:2` image, which has no rate-limit module.
 
+#### External DNS and CDN providers (optional)
+
+`edge.dns.provider` and `edge.cdn.provider` select optional external services: a DNS host that eu-deploy keeps in sync, and a CDN/DDoS-protection network in front of the server. Both are off unless set, and `none` turns them off explicitly:
+
+```yaml
+edge:
+  security_headers: true
+  dns:
+    provider: none
+  cdn:
+    provider: none
+```
+
+With a provider set, `eu deploy` checks its credentials **before** uploading anything, then after the release is live it ensures an `A`/`AAAA` record (DNS) or a CDN site (CDN) for every route hostname, pointing at the server's IP. Credentials are read from the deploy runner's environment (for example `EUDEPLOY_DNS_<PROVIDER>_TOKEN`) and never belong in `eudeploy.yaml`. Unknown provider names fail preflight and deploy with the list of supported ones.
+
+No provider adapters ship yet. The framework lives in `internal/providers`; each adapter is one file that registers itself, and is added once there is an account to test it against.
+
 ## Forgejo Actions
 
 For a Vercel-style flow, use:

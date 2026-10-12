@@ -48,3 +48,25 @@ func TestApplyEdgeOptionsSkipsRedirectsAndNil(t *testing.T) {
 		t.Fatalf("redirect route must not get edge options: %#v", routes[1].Edge)
 	}
 }
+
+func TestEdgeProvidersOffByDefault(t *testing.T) {
+	for _, edge := range []*config.EdgeSpec{nil, {SecurityHeaders: true}, {DNS: &config.EdgeProviderSpec{Provider: "none"}}} {
+		if err := validateEdgeProviderNames(edge); err != nil {
+			t.Fatalf("validateEdgeProviderNames(%#v) = %v", edge, err)
+		}
+		dns, cdn, err := resolveEdgeProviders(edge, func(string) string { return "" })
+		if err != nil || dns != nil || cdn != nil {
+			t.Fatalf("resolveEdgeProviders(%#v) = %v, %v, %v; want all nil", edge, dns, cdn, err)
+		}
+	}
+}
+
+func TestEdgeProvidersRejectUnknownNames(t *testing.T) {
+	edge := &config.EdgeSpec{CDN: &config.EdgeProviderSpec{Provider: "cloudflare"}}
+	if err := validateEdgeProviderNames(edge); err == nil {
+		t.Fatal("unknown CDN provider should fail validation")
+	}
+	if _, _, err := resolveEdgeProviders(edge, func(string) string { return "" }); err == nil {
+		t.Fatal("unknown CDN provider should fail before deploy")
+	}
+}
