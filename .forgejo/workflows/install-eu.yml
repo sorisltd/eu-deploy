@@ -89,8 +89,14 @@ jobs:
         if: inputs.action == 'install'
         run: |
           CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o eu-build ./cmd/eu
-          ./eu-build --help | head -1
-          ./eu-build --help | grep -q "eu-deploy" || { echo "built binary does not look like eu"; exit 1; }
+          # Capture the help text once: piping straight into head or grep -q
+          # can close the pipe early, and with pipefail the SIGPIPE fails the step.
+          help_text="$(./eu-build --help)"
+          echo "${help_text%%$'\n'*}"
+          case "$help_text" in
+            *eu-deploy*) ;;
+            *) echo "built binary does not look like eu"; exit 1 ;;
+          esac
           git rev-parse --short=12 HEAD > eu-build.sha
 
       - name: Set up SSH
