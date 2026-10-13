@@ -876,7 +876,92 @@ func main() {
 	addJSONFlag(rollbackCmd)
 	addNoPromptFlag(rollbackCmd)
 
-	rootCmd.AddCommand(initCmd, buildCmd, deployCmd, preflightCmd, bootstrapCmd, analyticsCmd, maintenanceCmd, logsCmd, releasesCmd, destroyCmd, rollbackCmd)
+	migrateCmd := &cobra.Command{
+		Use:   "migrate [status|apply|baseline]",
+		Short: "Show or apply SQL migrations from database.migrations on the server",
+		Long: `Runs the database migrations configured in database.migrations without deploying.
+
+  eu migrate status                 list applied and pending files, change nothing
+  eu migrate apply                  back up, then apply pending files in name order
+  eu migrate baseline               one-time, for an existing database: mark every
+                                    file as already applied without running it
+  eu migrate baseline --through F   mark files up to and including F; later ones stay pending
+
+Deploys apply pending migrations automatically after the image is built and
+before traffic switches to the new release.`,
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			mode := "status"
+			if len(args) == 1 {
+				mode = args[0]
+			}
+			jsonMode := commandJSONEnabled(cmd)
+			cfg, cfgPath, wd, err := loadConfigFromWorkingDir()
+			if err != nil {
+				return err
+			}
+			requestedTarget, err := cmd.Flags().GetString("target")
+			if err != nil {
+				return err
+			}
+			through, err := cmd.Flags().GetString("through")
+			if err != nil {
+				return err
+			}
+			target := resolveTarget(cfg, requestedTarget, "hetzner")
+			if !deploy.IsRemoteTarget(target) {
+				return fmt.Errorf("unsupported target: %s", target)
+			}
+			remoteTarget, err := deploy.ParseRemoteTarget(target)
+			if err != nil {
+				return err
+			}
+			if commandShouldPrompt(cmd) {
+				prepared, err := deploy.PrepareRemoteConfig(&cfg, wd, remoteTarget, deploy.PrepareRemoteConfigOptions{})
+				if err != nil {
+					return err
+				}
+				if prepared.Changed {
+					if err := config.WriteYAML(cfgPath, cfg); err != nil {
+						return err
+					}
+					fmt.Printf("OK Updated %s\n", filepath.Base(cfgPath))
+				}
+			}
+			opts, err := buildMaintenanceOptions(cfg, wd, remoteTarget)
+			if err != nil {
+				return err
+			}
+			result, err := deploy.RunRemoteMigrations(opts, mode, strings.TrimSpace(through))
+			if err != nil {
+				if jsonMode {
+					return newJSONCommandError(cmd, string(remoteTarget), err, nil)
+				}
+				return err
+			}
+			if jsonMode {
+				return emitJSONSuccess(cmd, string(remoteTarget), result)
+			}
+			switch mode {
+			case "status":
+				fmt.Printf("OK %d applied, %d pending\n", result.Applied, result.Pending)
+			case "baseline":
+				fmt.Printf("OK Baseline: %d file(s) marked as applied, %d pending\n", result.Applied, result.Pending)
+			default:
+				fmt.Printf("OK Applied %d migration(s); %d recorded in total\n", result.Ran, result.Applied)
+				if result.Backup != "" {
+					fmt.Printf("OK Backup: %s\n", result.Backup)
+				}
+			}
+			return nil
+		},
+	}
+	migrateCmd.Flags().String("target", "", "Target (hetzner|scaleway|ovh)")
+	migrateCmd.Flags().String("through", "", "baseline only: last file to mark as applied")
+	addJSONFlag(migrateCmd)
+	addNoPromptFlag(migrateCmd)
+
+	rootCmd.AddCommand(initCmd, buildCmd, deployCmd, preflightCmd, bootstrapCmd, analyticsCmd, maintenanceCmd, logsCmd, releasesCmd, destroyCmd, rollbackCmd, migrateCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		if argsWantJSON(os.Args[1:]) {
@@ -1274,6 +1359,11 @@ func buildRemoteOptions(cfg config.Config, wd string, target deploy.RemoteTarget
 			Password: sharedDatabasePassword,
 		}
 	}
+	migrationOpts, err := resolveMigrationOptions(cfg, wd, target, spec.ServerPath, safeProject)
+	if err != nil {
+		return deploy.RemoteOptions{}, err
+	}
+	opts.Migrations = migrationOpts
 	if cfg.Deploy.PostDeploy != nil && strings.TrimSpace(cfg.Deploy.PostDeploy.Command) != "" {
 		opts.PostDeploy = &deploy.PostDeployOptions{
 			Command: cfg.Deploy.PostDeploy.Command,
@@ -1281,6 +1371,52 @@ func buildRemoteOptions(cfg config.Config, wd string, target deploy.RemoteTarget
 		}
 	}
 
+	return opts, nil
+}
+
+// resolveMigrationOptions fills database.migrations defaults. With the shared
+// database the container, database and user come from database.shared.
+func resolveMigrationOptions(cfg config.Config, wd string, target deploy.RemoteTarget, serverPath, safeProject string) (*deploy.MigrationOptions, error) {
+	if cfg.Database == nil || cfg.Database.Migrations == nil {
+		return nil, nil
+	}
+	spec := cfg.Database.Migrations
+	dir := strings.TrimSpace(spec.Dir)
+	if dir == "" {
+		return nil, fmt.Errorf("database.migrations.dir is required (for example db/migrations)")
+	}
+	if !filepath.IsAbs(dir) {
+		dir = filepath.Join(wd, dir)
+	}
+	opts := &deploy.MigrationOptions{
+		Dir:         dir,
+		Container:   strings.TrimSpace(spec.Container),
+		Database:    strings.TrimSpace(spec.Database),
+		User:        strings.TrimSpace(spec.User),
+		Backup:      spec.Backup == nil || *spec.Backup,
+		KeepBackups: spec.KeepBackups,
+	}
+	if shared := resolveSharedDatabaseSpec(cfg, target); shared != nil {
+		if opts.Container == "" {
+			opts.Container = deploy.SharedPostgresContainerName()
+		}
+		if opts.Database == "" {
+			opts.Database = strings.TrimSpace(shared.Name)
+		}
+		if opts.User == "" {
+			opts.User = strings.TrimSpace(shared.User)
+		}
+	}
+	if opts.User == "" {
+		opts.User = "postgres"
+	}
+	if opts.KeepBackups <= 0 {
+		opts.KeepBackups = 10
+	}
+	if opts.Container == "" || opts.Database == "" {
+		return nil, fmt.Errorf("database.migrations needs container and database (or database.mode: shared)")
+	}
+	opts.BackupDir = filepath.ToSlash(filepath.Join(serverPath, "backups", safeProject))
 	return opts, nil
 }
 

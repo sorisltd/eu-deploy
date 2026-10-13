@@ -234,7 +234,21 @@ type DatabaseSpec struct {
 		Region string `yaml:"region"`
 		PITR   bool   `yaml:"pitr"`
 	} `yaml:"managed,omitempty"`
-	Shared *SharedDatabaseSpec `yaml:"shared,omitempty"`
+	Shared     *SharedDatabaseSpec `yaml:"shared,omitempty"`
+	Migrations *MigrationsSpec     `yaml:"migrations,omitempty"`
+}
+
+// MigrationsSpec turns on SQL migrations during remote deploys: pending files in
+// Dir are applied after the new image is built and before traffic moves to it.
+// With database.mode=shared the container, database and user default to the
+// shared Postgres; otherwise container and database must be set.
+type MigrationsSpec struct {
+	Dir         string `yaml:"dir"`
+	Container   string `yaml:"container,omitempty"`
+	Database    string `yaml:"database,omitempty"`
+	User        string `yaml:"user,omitempty"`
+	Backup      *bool  `yaml:"backup,omitempty"`       // default true
+	KeepBackups int    `yaml:"keep_backups,omitempty"` // default 10
 }
 
 type SharedDatabaseSpec struct {
