@@ -45,9 +45,13 @@ The checked-in sample config lives at `templates/node-web.yaml`. This repository
 
 `eu deploy`
 - `eu deploy` uses local Docker by default.
-- `eu deploy --target hetzner|scaleway|ovh` builds the app if needed, uploads the artifact, starts or updates the app container, reloads the shared Caddy proxy config on the server, can provision one PostgreSQL database/user per app on the same VM, can run a configured post-deploy command for migrations/setup, and keeps the last three release images for rollback.
+- `eu deploy --target hetzner|scaleway|ovh` builds the app if needed, uploads the artifact, starts or updates the app container, reloads the shared Caddy proxy config on the server, can provision one PostgreSQL database/user per app on the same VM, applies SQL migrations from `database.migrations`, can run a configured post-deploy command for setup, and keeps the last three release images for rollback.
 - Add `--json` to emit a single machine-readable result object instead of human-oriented text. In JSON mode, the command does not prompt for missing config values.
 - The JSON payload includes an ordered `phases` array with stable IDs so a UI can map deploy progress and failures consistently.
+
+`eu migrate [status|apply|baseline]`
+- Works with `database.migrations` (see below): lists applied and pending SQL files, applies pending ones, or runs the one-time `baseline` for a database that already has its schema.
+- Deploys apply pending migrations on their own; use this to check status or to baseline. Add `--json` for a machine-readable result.
 
 `eu logs`
 - Streams remote Docker logs for the active app container, the shared proxy, or the shared PostgreSQL container.
@@ -165,6 +169,54 @@ deploy:
 ```
 
 - The listed `include` paths are copied into the runtime image before the post-deploy command runs.
+
+#### SQL migrations
+
+For plain `.sql` migration files, let `eu-deploy` apply them on every deploy:
+
+```yaml
+database:
+  mode: shared            # container, database and user default to the shared Postgres
+  shared:
+    name: my_app
+    user: my_app
+  migrations:
+    dir: db/migrations    # *.sql, applied in filename order
+    # backup: true        # pg_dump before applying (default), kept in <server_path>/backups/<app>
+    # keep_backups: 10
+```
+
+Without the shared database, point it at the Postgres container yourself:
+
+```yaml
+database:
+  mode: external
+  migrations:
+    dir: supabase/migrations
+    container: my-postgres   # docker container on the server
+    database: my_app
+    user: postgres           # default
+```
+
+How a deploy runs them:
+- After the new image is built and **before** traffic moves to it, pending files are applied. If a migration fails, the deploy stops and the current release keeps serving.
+- Each file runs in one transaction together with its bookkeeping row in `public.schema_migrations`, so a failed file leaves nothing behind. Files with their own `BEGIN;`/`COMMIT;` are run as written.
+- A backup (`pg_dump -Fc`) is taken before the first pending file; no backup, no migration.
+- Files with `DROP TABLE/COLUMN/SCHEMA/DATABASE`, `TRUNCATE` or `DELETE FROM` are refused unless they contain a line `-- allow-destructive`. Function bodies, comments, strings and `GRANT`/`REVOKE` are not counted; `DO` blocks are.
+- Applied files are never re-run. Editing one later is reported by `eu migrate status`; write a new file instead.
+- The old release still serves while the migration runs, so keep changes backwards compatible (add, then remove in a later deploy).
+
+First time on a database that already has tables: nothing is recorded yet, so the deploy refuses rather than re-running old files. Run once:
+
+```bash
+eu migrate status --target hetzner     # see what it would do
+eu migrate baseline --target hetzner   # mark all current files as applied
+# or: eu migrate baseline --through 0042_last_applied.sql   (later files stay pending)
+```
+
+A brand-new empty database needs no baseline; everything is applied on the first deploy.
+
+To restore a backup: `docker exec -i <container> pg_restore -U <user> -d <db> --clean --if-exists < <file>.dump`.
 - For local setup or migrations, tunnel into the server:
 
 ```bash

@@ -14,6 +14,7 @@ import (
 
 	"github.com/sorisltd/eu-deploy/internal/build"
 	"github.com/sorisltd/eu-deploy/internal/config"
+	"github.com/sorisltd/eu-deploy/internal/migrations"
 )
 
 const (
@@ -58,6 +59,7 @@ type RemoteOptions struct {
 	SiteConfigName      string
 	SharedDatabase      *SharedDatabaseOptions
 	PostDeploy          *PostDeployOptions
+	Migrations          *MigrationOptions
 	Env                 map[string]string
 	KeepReleases        int
 	Packages            []string
@@ -81,6 +83,18 @@ type SharedDatabaseOptions struct {
 	Name     string
 	User     string
 	Password string
+}
+
+// MigrationOptions: Dir is the local folder with *.sql files; the rest locate
+// the database on the remote host.
+type MigrationOptions struct {
+	Dir         string
+	Container   string
+	Database    string
+	User        string
+	Backup      bool
+	BackupDir   string
+	KeepBackups int
 }
 
 type PostDeployOptions struct {
@@ -384,6 +398,8 @@ func validateRemoteDeployOptions(opts RemoteOptions) error {
 	}
 	if isStaticRuntime(opts.RuntimeType) {
 		switch {
+		case opts.Migrations != nil:
+			return fmt.Errorf("database.migrations needs an app runtime; static sites have no database step")
 		case strings.TrimSpace(opts.ArtifactPath) == "":
 			return fmt.Errorf("artifact path is required")
 		case strings.TrimSpace(opts.StaticArchiveRoot) == "":
@@ -445,6 +461,12 @@ func prepareHetznerBundle(opts RemoteOptions) (string, error) {
 			return "", err
 		}
 		dockerfileOpts.PostDeployArchive = "postdeploy.tar.gz"
+	}
+	if opts.Migrations != nil {
+		if err := writeMigrationBundle(*opts.Migrations, bundleDir); err != nil {
+			os.RemoveAll(bundleDir)
+			return "", err
+		}
 	}
 	if err := os.WriteFile(filepath.Join(bundleDir, "Dockerfile"), []byte(dockerfileContents(dockerfileOpts)), 0o644); err != nil {
 		os.RemoveAll(bundleDir)
@@ -623,6 +645,12 @@ func renderHetznerDeployScript(opts RemoteOptions) string {
 		)
 	}
 
+	if opts.Migrations != nil {
+		lines = append(lines,
+			fmt.Sprintf("cp %s %s %s", migrations.ArchiveName, migrations.RunnerName, shellQuote(releaseDir)),
+		)
+	}
+
 	if opts.SharedDatabase != nil {
 		lines = append(lines, renderSharedDatabaseSetup(opts, runtimeEnvPath)...)
 	}
@@ -662,6 +690,15 @@ func renderHetznerDeployScript(opts RemoteOptions) string {
 		"HEALTHCHECK_PATH="+shellQuote(healthPath),
 		fmt.Sprintf("cd %s", shellQuote(releaseDir)),
 		"docker build -t \"$RELEASE_IMAGE\" -f Dockerfile .",
+	)
+	if opts.Migrations != nil {
+		// The old release keeps serving until this succeeds; a failed migration stops the deploy here.
+		lines = append(lines,
+			"echo 'Running database migrations...'",
+			fmt.Sprintf("EU_MIGRATE_WHO=%s bash %s apply", shellQuote("deploy "+opts.ReleaseID), migrations.RunnerName),
+		)
+	}
+	lines = append(lines,
 		"docker rm -f \"$next_container\" >/dev/null 2>&1 || true",
 		fmt.Sprintf("docker run -d --restart unless-stopped --network %s --env-file %s --name \"$next_container\" -p 127.0.0.1:${next_port}:%d%s \"$RELEASE_IMAGE\" >/dev/null",
 			shellQuote(sharedDockerNetwork), shellQuote(runtimeEnvPath), opts.ContainerPort, renderVolumeFlags(opts.Volumes)),
