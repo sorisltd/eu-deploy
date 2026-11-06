@@ -515,8 +515,9 @@ func firstHeaderValue(headers map[string][]string, key string) string {
 
 func isKnownBotUserAgent(userAgent string) bool {
 	value := strings.ToLower(strings.TrimSpace(userAgent))
+	// Every real browser sends a user agent; an empty one is a script or scanner.
 	if value == "" {
-		return false
+		return true
 	}
 
 	knownBotTokens := []string{
@@ -561,6 +562,35 @@ func isKnownBotUserAgent(userAgent string) bool {
 		"statuscake",
 		"better uptime",
 		"datadog/synthetics",
+		// Link-preview fetchers whose user agent has no "bot" in it.
+		"whatsapp/",
+		"iframely",
+		"embedly",
+		"vkshare",
+		"google-pagerenderer",
+		"google-inspectiontool",
+		"google-read-aloud",
+		"googleproducer",
+		"facebookcatalog",
+		// Uptime and health-check probes.
+		"site24x7",
+		"uptime-kuma",
+		"hetrixtools",
+		"freshping",
+		"check_http",
+		"nagios",
+		"zabbix",
+		"googlestackdrivermonitoring",
+		"cloudflare-traffic-manager",
+		"cloudflare-healthchecks",
+		// Internet-wide scanners.
+		"censysinspect",
+		"zgrab",
+		"masscan",
+		"nmap",
+		"netcraft",
+		"expanse",
+		"internet-measurement",
 	}
 
 	for _, token := range knownBotTokens {
@@ -590,6 +620,21 @@ func isKnownBotUserAgent(userAgent string) bool {
 		"java/",
 		"okhttp",
 		"chrome-lighthouse",
+		"lighthouse",
+		"headless",
+		"python-urllib",
+		"undici",
+		"axios/",
+		"guzzlehttp",
+		"httpie",
+		"powershell",
+		"libcurl",
+		"winhttp",
+		"reqwest/",
+		"rest-client",
+		"faraday",
+		"colly",
+		"wordpress/",
 	}
 
 	for _, token := range automationTokens {
@@ -598,9 +643,11 @@ func isKnownBotUserAgent(userAgent string) bool {
 		}
 	}
 
-	return strings.Contains(value, "bot") ||
-		strings.Contains(value, "crawler") ||
-		strings.Contains(value, "spider")
+	// Cubot is an Android phone brand ("Android 13; CUBOT KINGKONG 9"), not a bot.
+	generic := strings.ReplaceAll(value, "cubot", "")
+	return strings.Contains(generic, "bot") ||
+		strings.Contains(generic, "crawler") ||
+		strings.Contains(generic, "spider")
 }
 
 func hashIP(secret string, timestamp time.Time, ip string) string {
