@@ -45,3 +45,39 @@ func TestSchemaSQLAddsHumanColumns(t *testing.T) {
 		}
 	}
 }
+
+func TestAggregateSQLTreatsDatacenterNetworksAsBots(t *testing.T) {
+	sql := AggregateSQL(time.Date(2026, time.November, 6, 0, 0, 0, 0, time.UTC))
+
+	for _, expected := range []string{
+		"BOOL_OR((LOWER(COALESCE(b.isp_name, '')) LIKE ANY (ARRAY[",
+		"'%tencent%'",
+		"'%google llc%'",
+		"OR flags.from_datacenter",
+	} {
+		if !strings.Contains(sql, expected) {
+			t.Fatalf("expected aggregate SQL to contain %q, got:\n%s", expected, sql)
+		}
+	}
+}
+
+func TestDatacenterNetworkTokensSkipNetworksPeopleUse(t *testing.T) {
+	people := []string{
+		"telia lietuva, ab",
+		"uab bite lietuva",
+		"cloudflare, inc.",
+		"akamai technologies, inc.",
+		"space exploration technologies corporation",
+		"comcast cable communications, llc",
+		"google fiber inc.",
+		"deutsche telekom ag",
+	}
+
+	for _, isp := range people {
+		for _, token := range datacenterNetworkTokens {
+			if strings.Contains(isp, token) {
+				t.Fatalf("token %q would classify %q as a datacenter", token, isp)
+			}
+		}
+	}
+}

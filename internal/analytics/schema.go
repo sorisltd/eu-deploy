@@ -147,6 +147,84 @@ func crawlerUtilityPathCondition(pathExpr string) string {
 	return fmt.Sprintf("%s IN (%s)", path, strings.Join(literals, ", "))
 }
 
+// datacenterNetworkTokens match the GeoIP ISP names of cloud, hosting and
+// scanner networks. People do not browse from these, so their traffic is
+// counted as bots even when it sends a normal browser user agent. Matched as
+// lowercase substrings. Networks real users sit behind (Cloudflare WARP,
+// iCloud Private Relay via Akamai Technologies, Starlink, ISPs) stay out.
+// Keep in sync with lib/analytics-live.ts in eu-deploy-dashboard.
+var datacenterNetworkTokens = []string{
+	"alibaba",
+	"amazon",
+	"digitalocean",
+	"google llc",
+	"google cloud",
+	"microsoft corporation",
+	"oracle corporation",
+	"tencent",
+	"huawei cloud",
+	"baidu",
+	"bytedance",
+	"facebook",
+	"meta platforms",
+	"akamai connected cloud",
+	"linode",
+	"hetzner",
+	"ovh sas",
+	"contabo",
+	"scaleway",
+	"ionos",
+	"netcup",
+	"leaseweb",
+	"the constant company",
+	"vultr",
+	"choopa",
+	"internet vikings",
+	"glesys",
+	"m247",
+	"datacamp",
+	"hostpapa",
+	"host baltic",
+	"code200",
+	"carinet",
+	"routerhosting",
+	"colocation america",
+	"web2objects",
+	"logicweb",
+	"custodiandc",
+	"interserver",
+	"egihosting",
+	"quickpacket",
+	"frantech",
+	"clouvider",
+	"fast servers",
+	"tube-hosting",
+	"mevspace",
+	"tzulo",
+	"hostroyale",
+	"sakura internet",
+	"vps dedicated",
+	"tc datacenter",
+	"techoff",
+	"omegatech",
+	"dedik services",
+	"virtual systems",
+	"3xk tech",
+	"censys",
+	"onyphe",
+	"driftnet",
+	"modat",
+	"kaspersky",
+}
+
+func datacenterNetworkCondition(ispExpr string) string {
+	patterns := make([]string, 0, len(datacenterNetworkTokens))
+	for _, token := range datacenterNetworkTokens {
+		patterns = append(patterns, sqlStringLiteral("%"+token+"%"))
+	}
+	return fmt.Sprintf("(LOWER(COALESCE(%s, '')) LIKE ANY (ARRAY[%s]))", ispExpr, strings.Join(patterns, ", "))
+}
+
 func humanClassificationCTE(targetDate time.Time) string {
 	dayLiteral := targetDate.UTC().Format("2006-01-02")
 	dayExpr := "DATE(timezone('UTC', b.timestamp))"
@@ -155,6 +233,7 @@ func humanClassificationCTE(targetDate time.Time) string {
 	botProbe := botProbePathCondition(pathExpr)
 	short404Probe := short404ProbeCondition(pathExpr, statusExpr)
 	crawlerUtility := crawlerUtilityPathCondition(pathExpr)
+	datacenter := datacenterNetworkCondition("b.isp_name")
 
 	return strings.TrimSpace(fmt.Sprintf(`
 WITH buffer_rows AS (
@@ -179,6 +258,7 @@ ip_day_flags AS (
     date,
     ip_hash,
     BOOL_OR(is_known_bot) AS has_known_bot_ua,
+    BOOL_OR(%s) AS from_datacenter,
     BOOL_OR(%s) AS has_probe_path,
     COUNT(*) FILTER (WHERE %s) AS short_404_probes,
     COUNT(*) FILTER (WHERE %s) AS crawler_utility_requests,
@@ -198,8 +278,8 @@ classified_rows AS (
     b.bytes_sent,
     (
       flags.has_known_bot_ua
-      OR
-      flags.has_probe_path
+      OR flags.from_datacenter
+      OR flags.has_probe_path
       OR flags.short_404_probes >= 2
       OR (flags.crawler_utility_requests > 0 AND flags.non_utility_requests = 0)
     ) AS is_bot
@@ -208,7 +288,7 @@ classified_rows AS (
     ON flags.project_id = b.project_id
    AND flags.date = b.date
    AND flags.ip_hash = b.ip_hash
-)`, dayExpr, dayExpr, dayLiteral, botProbe, short404Probe, crawlerUtility, crawlerUtility))
+)`, dayExpr, dayExpr, dayLiteral, datacenter, botProbe, short404Probe, crawlerUtility, crawlerUtility))
 }
 
 func AggregateSQL(targetDate time.Time) string {
