@@ -28,6 +28,9 @@ func TestDeployScriptMigratesAfterBuildBeforeSwitch(t *testing.T) {
 	if build < 0 || migrate < 0 || run < 0 || !(build < migrate && migrate < run) {
 		t.Fatalf("expected build < migrate < run, got %d %d %d", build, migrate, run)
 	}
+	if !strings.Contains(script, `docker build -t "$RELEASE_IMAGE" --label eu-deploy.release='r1' -f Dockerfile .`) {
+		t.Fatal("release image is not labelled, so host cleanup would prune it and break rollback")
+	}
 	if !strings.Contains(script, "cp migrations.tar.gz migrate.sh") {
 		t.Fatal("migration files are not copied into the release folder")
 	}
