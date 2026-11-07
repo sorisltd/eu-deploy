@@ -689,7 +689,7 @@ func renderHetznerDeployScript(opts RemoteOptions) string {
 		"old_container=\"$APP_CONTAINER_BASE-$old_slot\"",
 		"HEALTHCHECK_PATH="+shellQuote(healthPath),
 		fmt.Sprintf("cd %s", shellQuote(releaseDir)),
-		"docker build -t \"$RELEASE_IMAGE\" -f Dockerfile .",
+		fmt.Sprintf("docker build -t \"$RELEASE_IMAGE\" --label %s=%s -f Dockerfile .", releaseImageLabel, shellQuote(opts.ReleaseID)),
 	)
 	if opts.Migrations != nil {
 		// The old release keeps serving until this succeeds; a failed migration stops the deploy here.

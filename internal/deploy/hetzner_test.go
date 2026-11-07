@@ -197,7 +197,7 @@ func TestRenderHetznerBootstrapScript(t *testing.T) {
 		"$SUDO mkdir -p '/var/log/caddy'",
 		"$SUDO docker network inspect 'eu-deploy' >/dev/null 2>&1 || $SUDO docker network create 'eu-deploy' >/dev/null",
 		"cat > '/usr/local/bin/eu-deploy-host-cleanup' <<'EOF'",
-		"docker image prune -af --filter \"until=${IMAGE_MAX_AGE}\"",
+		"docker image prune -af --filter \"until=${IMAGE_MAX_AGE}\" --filter \"label!=eu-deploy.release\"",
 		"docker builder prune -af --filter \"until=${BUILDER_MAX_AGE}\"",
 		"journalctl --vacuum-size=\"${JOURNAL_MAX_SIZE}\"",
 		"cat > '/etc/systemd/system/eu-deploy-host-cleanup.timer' <<'EOF'",

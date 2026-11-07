@@ -10,6 +10,10 @@ const (
 	defaultHostCleanupBuilderMaxAge = "168h"
 	defaultHostCleanupJournalAge    = "14d"
 	defaultHostCleanupJournalSize   = "512M"
+
+	// releaseImageLabel marks release images so the host cleanup leaves them for rollback;
+	// the deploy itself removes release images that drop out of the release history.
+	releaseImageLabel = "eu-deploy.release"
 )
 
 func renderHostCleanupScript() string {
@@ -23,7 +27,7 @@ func renderHostCleanupScript() string {
 		"JOURNAL_MAX_SIZE=\"${EUDEPLOY_JOURNAL_MAX_SIZE:-" + defaultHostCleanupJournalSize + "}\"",
 		"",
 		"if command -v docker >/dev/null 2>&1; then",
-		"  docker image prune -af --filter \"until=${IMAGE_MAX_AGE}\" >/dev/null 2>&1 || true",
+		"  docker image prune -af --filter \"until=${IMAGE_MAX_AGE}\" --filter \"label!=" + releaseImageLabel + "\" >/dev/null 2>&1 || true",
 		"  docker builder prune -af --filter \"until=${BUILDER_MAX_AGE}\" >/dev/null 2>&1 || true",
 		"fi",
 		"",
